@@ -1,0 +1,62 @@
+/* ═══════════════════════════════════════════
+   OUMNIA OS — Global Styles (PATCHED v2)
+   ═══════════════════════════════════════════ */
+
+:root {
+  --bg-primary: #060610;
+  --bg-card: rgba(255, 255, 255, 0.015);
+  --bg-hover: rgba(0, 229, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.06);
+  --border-accent: rgba(0, 229, 255, 0.15);
+  --cyan: #00e5ff;
+  --purple: #7c4dff;
+  --green: #00e676;
+  --orange: #ff6d00;
+  --yellow: #ffd740;
+  --red: #ff6e40;
+  --text-primary: rgba(255, 255, 255, 0.9);
+  --text-secondary: rgba(255, 255, 255, 0.5);
+  --text-muted: rgba(255, 255, 255, 0.25);
+  --font-main: "Outfit", "SF Pro Display", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", monospace;
+  --font-display: "Orbitron", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Scrollbar — always visible */
+::-webkit-scrollbar { width: 10px !important; display: block !important; }
+::-webkit-scrollbar-track { background: rgba(0, 229, 255, 0.04) !important; }
+::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.3) !important; border-radius: 5px !important; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.5) !important; }
+
+/* Force scrollbar visibility on macOS */
+.scroll-area {
+  overflow-y: scroll !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Animations */
+@keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Selection */
+::selection {
+  background: rgba(0, 229, 255, 0.2);
+  color: white;
+}
