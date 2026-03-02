@@ -1,6 +1,9 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const memory = require("./memory");
+const os = require("os");
+const { execSync } = require("child_process");
 
 // Load .env manually for reliability
 const envPath = path.join(__dirname, "..", ".env");
@@ -34,6 +37,9 @@ function setupClaudeAgent() {
 
 Tu travailles avec Oussama sur les projets GASTROFLOW et Snack Pizzeria Oumnia.
 
+MEMOIRE PERSISTANTE :
+${memory.getContext()}
+
 CONTEXTE PROJETS ACTIFS :
 ${context || "Pas de contexte."}
 
@@ -56,6 +62,7 @@ Réponds en français, concis et actionnable. Sois proactif.`;
         system: systemPrompt,
         messages: [{ role: "user", content: message }],
       });
+      memory.addConversation(message.substring(0, 100));
       return { success: true, text: response.content[0].text };
     } catch (err) {
       console.error("[OUMNIA] API Error:", err.message);
@@ -83,6 +90,81 @@ function setupLocalStore() {
 // ═══ EXTERNAL LINKS ═══
 function setupExternalLinks() {
   ipcMain.handle("open-external", (_, url) => shell.openExternal(url));
+}
+
+// ═══ MEMORY ═══
+function setupMemory() {
+  ipcMain.handle("memory-save", async (_, data) => {
+    memory.saveMemory(data);
+    return { success: true };
+  });
+  ipcMain.handle("memory-load", async () => {
+    const data = memory.loadMemory();
+    return { success: true, data };
+  });
+}
+
+// ═══ PROJECT SCANNER ═══
+function setupProjectScanner() {
+  ipcMain.handle("scan-projects", async () => {
+    const scanDirs = [
+      path.join(os.homedir(), "Full_AI", "Projects"),
+      path.join(os.homedir(), "Documents"),
+      path.join(os.homedir(), "Desktop"),
+    ];
+    const projects = [];
+    for (const dir of scanDirs) {
+      if (!fs.existsSync(dir)) continue;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+        const fullPath = path.join(dir, entry.name);
+        try {
+          const files = fs.readdirSync(fullPath);
+          let totalSize = 0;
+          let lastModified = 0;
+          for (const f of files) {
+            try {
+              const stat = fs.statSync(path.join(fullPath, f));
+              totalSize += stat.size;
+              if (stat.mtimeMs > lastModified) lastModified = stat.mtimeMs;
+            } catch {}
+          }
+          let git = null;
+          try {
+            const branch = execSync("git branch --show-current", { cwd: fullPath, encoding: "utf8" }).trim();
+            const status = execSync("git status --porcelain", { cwd: fullPath, encoding: "utf8" }).trim();
+            git = { branch, dirty: status.length > 0 };
+          } catch {}
+          projects.push({
+            name: entry.name,
+            path: fullPath,
+            fileCount: files.length,
+            totalSize,
+            lastModified: lastModified ? new Date(lastModified).toISOString() : null,
+            git,
+          });
+        } catch {}
+      }
+    }
+    return { success: true, projects };
+  });
+}
+
+// ═══ SYSTEM INFO ═══
+function setupSystemInfo() {
+  ipcMain.handle("get-system-info", async () => {
+    return {
+      success: true,
+      platform: os.platform(),
+      hostname: os.hostname(),
+      cpuModel: os.cpus()[0]?.model || "Unknown",
+      freemem: (os.freemem() / 1073741824).toFixed(1) + " GB",
+      totalmem: (os.totalmem() / 1073741824).toFixed(1) + " GB",
+      uptime: Math.floor(os.uptime() / 3600) + "h",
+      datetime: new Date().toLocaleString("fr-FR"),
+    };
+  });
 }
 
 // ═══ AUTO-LAUNCH ═══
@@ -122,11 +204,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  memory.incrementSession();
   setupAutoLaunch();
   setupClaudeAgent();
   setupGoogleSheets();
   setupLocalStore();
   setupExternalLinks();
+  setupMemory();
+  setupProjectScanner();
+  setupSystemInfo();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

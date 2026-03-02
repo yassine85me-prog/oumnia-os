@@ -15,7 +15,6 @@ function App() {
   const [activeNav, setActiveNav] = useState("dashboard");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [projects, setProjects] = useState(DEFAULT_PROJECTS);
-  const [aiSpeaking, setAiSpeaking] = useState(true);
   const [aiText, setAiText] = useState("");
   const [aiTyping, setAiTyping] = useState(true);
   const [chatInput, setChatInput] = useState("");
@@ -27,6 +26,8 @@ function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [hoveredAgent, setHoveredAgent] = useState(null);
   const chatEndRef = useRef(null);
+  const [hologramState, setHologramState] = useState("idle");
+  const [chatOpen, setChatOpen] = useState(false);
 
   const maxXp = 500;
   const activeProjects = projects.filter((p) => p.status === "in_progress");
@@ -46,22 +47,60 @@ function App() {
   useEffect(() => {
     setTimeout(() => setLoaded(true), 200);
     const timer = setInterval(() => setTime(new Date()), 1000);
+    let typingInterval;
 
-    // Typing animation for greeting
-    let i = 0;
-    const typing = setInterval(() => {
-      if (i <= fullGreeting.length) {
-        setAiText(fullGreeting.slice(0, i));
-        i++;
-      } else {
-        setAiTyping(false);
-        setTimeout(() => setAiSpeaking(false), 2000);
-        clearInterval(typing);
-      }
-    }, 22);
+    const typeText = (text, onDone) => {
+      let i = 0;
+      setAiTyping(true);
+      typingInterval = setInterval(() => {
+        if (i <= text.length) {
+          setAiText(text.slice(0, i));
+          i++;
+        } else {
+          setAiTyping(false);
+          clearInterval(typingInterval);
+          if (onDone) onDone();
+        }
+      }, 22);
+    };
 
-    // Load projects from Google Sheets if available
     if (isElectron) {
+      setHologramState("thinking");
+      Promise.all([
+        window.oumniaAPI.memoryLoad(),
+        window.oumniaAPI.scanProjects(),
+      ]).then(async ([memRes, scanRes]) => {
+        let context = "";
+        if (memRes.success && memRes.data) {
+          const mem = memRes.data;
+          context += `Sessions: ${mem.stats?.sessionsCount || 0}, Interactions: ${mem.stats?.totalInteractions || 0}\n`;
+          if (mem.conversations?.length > 0) {
+            context += `Derniere conversation: ${mem.conversations[0].summary}\n`;
+          }
+        }
+        if (scanRes.success && scanRes.projects?.length > 0) {
+          context += `Projets detectes: ${scanRes.projects.map(p => p.name).join(", ")}\n`;
+        }
+        const welcomePrompt = `Genere un message d'accueil personnalise et court (2-3 phrases max) pour Yassine. Il a ${activeProjects.length} projets actifs avec ${totalProgress}% de progression moyenne. Sois chaleureux et proactif. Suggere une action concrete.`;
+        try {
+          const res = await window.oumniaAPI.chat(welcomePrompt, context);
+          if (res.success) {
+            setHologramState("speaking");
+            typeText(res.text, () => setTimeout(() => setHologramState("idle"), 1500));
+          } else {
+            setHologramState("speaking");
+            typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+          }
+        } catch {
+          setHologramState("speaking");
+          typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+        }
+      }).catch(() => {
+        setHologramState("speaking");
+        typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+      });
+
+      // Load projects from Google Sheets if available
       window.oumniaAPI.loadProjects().then((res) => {
         if (res.success && res.projects.length > 0) {
           setProjects(res.projects);
@@ -70,9 +109,11 @@ function App() {
       // Load saved XP
       window.oumniaAPI.storeGet("xp").then((val) => val && setXp(val));
       window.oumniaAPI.storeGet("level").then((val) => val && setLevel(val));
+    } else {
+      typeText(fullGreeting);
     }
 
-    return () => { clearInterval(timer); clearInterval(typing); };
+    return () => { clearInterval(timer); if (typingInterval) clearInterval(typingInterval); };
   }, []);
 
   // ═══ Chat with Claude ═══
@@ -82,13 +123,14 @@ function App() {
     setChatInput("");
     setChatHistory((prev) => [...prev, { role: "user", text: msg }]);
     setChatLoading(true);
-    setAiSpeaking(true);
+    setHologramState("thinking");
 
     if (isElectron) {
       const projectContext = projects
         .map((p) => `- ${p.name}: ${p.status} (${p.progress}%) — ${p.desc}`)
         .join("\n");
       const res = await window.oumniaAPI.chat(msg, projectContext);
+      setHologramState("speaking");
       setChatHistory((prev) => [
         ...prev,
         { role: "ai", text: res.success ? res.text : `⚠️ ${res.error}` },
@@ -118,7 +160,7 @@ function App() {
     }
 
     setChatLoading(false);
-    setAiSpeaking(false);
+    setTimeout(() => setHologramState("idle"), 1500);
   }, [chatInput, chatLoading, projects, xp, level]);
 
   useEffect(() => {
@@ -353,16 +395,16 @@ function App() {
               <div style={{ fontSize: "10px", fontFamily: "var(--font-display)", color: "rgba(0,229,255,0.4)", letterSpacing: "4px", marginBottom: "-4px" }}>
                 O.U.M.N.I.A
               </div>
-              <JarvisHologram speaking={aiSpeaking} />
+              <JarvisHologram state={hologramState} onClick={() => setChatOpen(!chatOpen)} />
               <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "-4px" }}>
                 <div style={{
                   width: "5px", height: "5px", borderRadius: "50%",
-                  background: aiSpeaking ? "var(--cyan)" : "var(--green)",
-                  boxShadow: `0 0 8px ${aiSpeaking ? "var(--cyan)" : "var(--green)"}`,
-                  animation: aiSpeaking ? "pulse 1s infinite" : "none",
+                  background: hologramState === "idle" ? "var(--green)" : "var(--cyan)",
+                  boxShadow: `0 0 8px ${hologramState === "idle" ? "var(--green)" : "var(--cyan)"}`,
+                  animation: hologramState !== "idle" ? "pulse 1s infinite" : "none",
                 }} />
-                <span style={{ fontSize: "9px", fontFamily: "var(--font-mono)", color: aiSpeaking ? "var(--cyan)" : "var(--green)", letterSpacing: "2px" }}>
-                  {aiSpeaking ? "SPEAKING" : "READY"}
+                <span style={{ fontSize: "9px", fontFamily: "var(--font-mono)", color: hologramState === "idle" ? "var(--green)" : "var(--cyan)", letterSpacing: "2px" }}>
+                  {hologramState === "thinking" ? "THINKING" : hologramState === "speaking" ? "SPEAKING" : "READY"}
                 </span>
               </div>
             </div>
@@ -503,10 +545,8 @@ function App() {
             </div>
           </div>
 
-          {/* PROJECTS + CHAT */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "24px" }}>
-
-            {/* Active Projects */}
+          {/* PROJECTS */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px", marginBottom: "24px" }}>
             <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "18px" }}>
               <div style={{ fontSize: "10px", color: "var(--text-muted)", letterSpacing: "2px", fontWeight: "600", marginBottom: "14px" }}>
                 // PROJETS ACTIFS
@@ -534,59 +574,6 @@ function App() {
                   <div style={{ fontSize: "9px", color: "var(--text-muted)", marginTop: "4px" }}>{p.desc}</div>
                 </div>
               ))}
-            </div>
-
-            {/* AI Chat */}
-            <div style={{
-              background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "14px", padding: "18px",
-              display: "flex", flexDirection: "column",
-            }}>
-              <div style={{ fontSize: "10px", color: "var(--text-muted)", letterSpacing: "2px", fontWeight: "600", marginBottom: "14px" }}>
-                // AGENT OUMNIA · CHAT
-              </div>
-              <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px", minHeight: "120px" }}>
-                {chatHistory.length === 0 && (
-                  <div style={{ textAlign: "center", padding: "20px", color: "var(--text-muted)", fontSize: "11px" }}>
-                    <div style={{ fontSize: "24px", marginBottom: "6px" }}>◈</div>
-                    Demande-moi n'importe quoi sur tes projets...
-                  </div>
-                )}
-                {chatHistory.map((msg, i) => (
-                  <div key={i} style={{
-                    padding: "8px 12px", borderRadius: "8px", fontSize: "11px", lineHeight: 1.5,
-                    background: msg.role === "user" ? "rgba(0,229,255,0.08)" : "rgba(255,255,255,0.03)",
-                    color: msg.role === "user" ? "var(--cyan)" : "rgba(255,255,255,0.7)",
-                    alignSelf: msg.role === "user" ? "flex-end" : "flex-start", maxWidth: "85%",
-                    whiteSpace: "pre-wrap",
-                  }}>
-                    {msg.text}
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div style={{ padding: "8px 12px", fontSize: "11px", color: "var(--cyan)", animation: "pulse 1s infinite" }}>
-                    ◈ Analyse en cours...
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <input
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && sendChat()}
-                  placeholder="Parle à l'agent OUMNIA..."
-                  style={{
-                    flex: 1, padding: "8px 12px", borderRadius: "8px",
-                    border: "1px solid var(--border)", background: "rgba(255,255,255,0.03)",
-                    color: "#fff", fontSize: "11px", outline: "none", fontFamily: "var(--font-main)",
-                  }}
-                />
-                <button onClick={sendChat} style={{
-                  padding: "8px 14px", borderRadius: "8px", border: "none",
-                  background: "linear-gradient(135deg, var(--cyan), var(--purple))",
-                  color: "#fff", cursor: "pointer", fontSize: "11px", fontWeight: "600", fontFamily: "var(--font-main)",
-                }}>➤</button>
-              </div>
             </div>
           </div>
 
@@ -636,6 +623,75 @@ function App() {
             </div>
           </div>
 
+        </div>
+      </div>
+
+      {/* ═══ CHAT OVERLAY ═══ */}
+      <div style={{
+        position: "fixed", bottom: "24px", right: "24px", width: "400px", height: "500px",
+        background: "rgba(6,6,16,0.95)", border: "1px solid var(--border)", borderRadius: "16px",
+        backdropFilter: "blur(20px)", display: "flex", flexDirection: "column", zIndex: 100,
+        transform: chatOpen ? "translateY(0)" : "translateY(calc(100% + 40px))",
+        transition: "transform 0.3s ease",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+      }}>
+        {/* Header */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "14px 18px", borderBottom: "1px solid var(--border)",
+        }}>
+          <span style={{ fontSize: "10px", color: "var(--text-muted)", letterSpacing: "2px", fontWeight: "600" }}>
+            // AGENT OUMNIA · CHAT
+          </span>
+          <button onClick={() => setChatOpen(false)} style={{
+            background: "none", border: "none", color: "var(--text-muted)", fontSize: "16px",
+            cursor: "pointer", padding: "2px 6px", lineHeight: 1,
+          }}>✕</button>
+        </div>
+        {/* Messages */}
+        <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "14px 18px" }}>
+          {chatHistory.length === 0 && (
+            <div style={{ textAlign: "center", padding: "20px", color: "var(--text-muted)", fontSize: "11px" }}>
+              <div style={{ fontSize: "24px", marginBottom: "6px" }}>◈</div>
+              Demande-moi n'importe quoi sur tes projets...
+            </div>
+          )}
+          {chatHistory.map((msg, i) => (
+            <div key={i} style={{
+              padding: "8px 12px", borderRadius: "8px", fontSize: "11px", lineHeight: 1.5,
+              background: msg.role === "user" ? "rgba(0,229,255,0.08)" : "rgba(255,255,255,0.03)",
+              color: msg.role === "user" ? "var(--cyan)" : "rgba(255,255,255,0.7)",
+              alignSelf: msg.role === "user" ? "flex-end" : "flex-start", maxWidth: "85%",
+              whiteSpace: "pre-wrap",
+            }}>
+              {msg.text}
+            </div>
+          ))}
+          {chatLoading && (
+            <div style={{ padding: "8px 12px", fontSize: "11px", color: "var(--cyan)", animation: "pulse 1s infinite" }}>
+              ◈ Analyse en cours...
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+        {/* Input */}
+        <div style={{ display: "flex", gap: "6px", padding: "12px 18px", borderTop: "1px solid var(--border)" }}>
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && sendChat()}
+            placeholder="Parle à l'agent OUMNIA..."
+            style={{
+              flex: 1, padding: "8px 12px", borderRadius: "8px",
+              border: "1px solid var(--border)", background: "rgba(255,255,255,0.03)",
+              color: "#fff", fontSize: "11px", outline: "none", fontFamily: "var(--font-main)",
+            }}
+          />
+          <button onClick={sendChat} style={{
+            padding: "8px 14px", borderRadius: "8px", border: "none",
+            background: "linear-gradient(135deg, var(--cyan), var(--purple))",
+            color: "#fff", cursor: "pointer", fontSize: "11px", fontWeight: "600", fontFamily: "var(--font-main)",
+          }}>➤</button>
         </div>
       </div>
     </div>

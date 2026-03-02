@@ -23,6 +23,16 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
   toggleAutoLaunch: (enabled) =>
     ipcRenderer.invoke("toggle-auto-launch", enabled),
 
+  // ═══ Memory System ═══
+  memorySave: (data) => ipcRenderer.invoke("memory-save", data),
+  memoryLoad: () => ipcRenderer.invoke("memory-load"),
+
+  // ═══ Project Scanner ═══
+  scanProjects: () => ipcRenderer.invoke("scan-projects"),
+
+  // ═══ System Info ═══
+  getSystemInfo: () => ipcRenderer.invoke("get-system-info"),
+
   // ═══ External Links ═══
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
 
