@@ -38,7 +38,7 @@ function start() {
   }
   if (!ensureCompiled()) return false;
 
-  console.log("[NATIVE-SPEECH] Launching speech-helper");
+  // Launch speech-helper process
   speechProcess = spawn(HELPER_PATH, [], { stdio: ["pipe", "pipe", "pipe"] });
 
   let buffer = "";
@@ -50,35 +50,21 @@ function start() {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        if (msg.debug) {
-          console.log("[NATIVE-SPEECH] Debug:", msg.debug, JSON.stringify(msg));
-        }
         if (msg.text !== undefined && onResultCb) onResultCb(msg.text, !!msg.final);
-        if (msg.status) {
-          console.log("[NATIVE-SPEECH] Status:", msg.status);
-          if (onStatusCb) onStatusCb(msg.status);
-        }
-        if (msg.error) {
-          console.error("[NATIVE-SPEECH] Error:", msg.error, msg.message || "");
-          if (onErrorCb) onErrorCb(msg.error);
-        }
+        if (msg.status && onStatusCb) onStatusCb(msg.status);
+        if (msg.error && onErrorCb) onErrorCb(msg.error);
       } catch {}
     }
   });
 
-  speechProcess.stderr.on("data", (d) => {
-    const s = d.toString().trim();
-    if (s) console.warn("[NATIVE-SPEECH] stderr:", s);
-  });
+  speechProcess.stderr.on("data", () => {});
 
-  speechProcess.on("close", (code) => {
-    console.log("[NATIVE-SPEECH] Exited code", code);
+  speechProcess.on("close", () => {
     speechProcess = null;
     if (onStatusCb) onStatusCb("stopped");
   });
 
   speechProcess.on("error", (err) => {
-    console.error("[NATIVE-SPEECH] Spawn error:", err.message);
     speechProcess = null;
     if (onErrorCb) onErrorCb(err.message);
   });

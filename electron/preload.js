@@ -86,6 +86,20 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
     ipcRenderer.on("native-speech-error", (_, error) => cb(error));
   },
 
+  // ═══ Terminal (xterm.js + node-pty) ═══
+  terminalSpawn: (cwd) => ipcRenderer.invoke("terminal-spawn", { cwd }),
+  terminalInput: (id, data) => ipcRenderer.send("terminal-input", { id, data }),
+  terminalResize: (id, cols, rows) => ipcRenderer.send("terminal-resize", { id, cols, rows }),
+  terminalKill: (id) => ipcRenderer.invoke("terminal-kill", { id }),
+  onTerminalOutput: (cb) => {
+    ipcRenderer.removeAllListeners("terminal-output");
+    ipcRenderer.on("terminal-output", (_, p) => cb(p));
+  },
+  onTerminalExit: (cb) => {
+    ipcRenderer.removeAllListeners("terminal-exit");
+    ipcRenderer.on("terminal-exit", (_, p) => cb(p));
+  },
+
   // ═══ Diagnostics ═══
   logToMain: (msg) => ipcRenderer.send("renderer-log", msg),
 });

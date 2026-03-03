@@ -70,13 +70,6 @@ export const AGENTS = [
   { name: "Apollo", role: "Business & Sales", emoji: "💰", status: "idle", color: "#ffd740" },
 ];
 
-export const FOCUS_TASKS = [
-  { id: 1, text: "Configurer clés API ImagineArt dans .env", project: "Oumnia Digital Agency", status: "in_progress" },
-  { id: 2, text: "Créer branche dev + cloner sur Lenovo", project: "content-generator", status: "in_progress" },
-  { id: 3, text: "Tester pipeline text generation", project: "Oumnia Studio v2.0", status: "pending" },
-  { id: 4, text: "Connecter OCR → GASTROFLOW catalogue", project: "OCR_BONS_SYSTEM", status: "pending" },
-];
-
 export const QUICK_ACCESS = {
   "Dev Tools": [
     { name: "GitHub", url: "https://github.com/yassine85me-prog", color: "#f0f0f0" },
@@ -120,6 +113,7 @@ export const NAV_ITEMS = [
   {
     section: "WORKSPACE", items: [
       { icon: "⚡", label: "Projets", key: "projects" },
+      { icon: ">_", label: "Terminal", key: "terminal" },
       { icon: "🤖", label: "Agents", key: "agents" },
       { icon: "📋", label: "Tâches", key: "tasks" },
       { icon: "🔗", label: "Quick Links", key: "links" },

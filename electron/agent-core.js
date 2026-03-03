@@ -11,7 +11,7 @@ const path = require("path");
 const { execSync } = require("child_process");
 
 // ── Historique conversationnel de la session ──
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 40;
 let sessionHistory = [];
 
 // ── Cache du system prompt ──
@@ -220,13 +220,30 @@ function buildSystemPrompt(extraContext, { voiceMode = false } = {}) {
   const time = getTimeContext();
 
   const voiceInstructions = voiceMode
-    ? `MODE VOCAL ACTIF :
-- Reponds en 2-3 phrases MAXIMUM
+    ? `MODE VOCAL ACTIF — REGLES DE CONVERSATION :
+
+FORMAT :
+- Reponds en 2-3 phrases MAXIMUM, jamais plus
 - Pas de markdown, pas de code blocks, pas de listes a puces
-- Langage naturel et conversationnel
+- Pas de caracteres speciaux (*_#>) — texte brut uniquement
+
+ECOUTE ET COHERENCE (CRITIQUE) :
+- ECOUTE d'abord ce que Yassine demande. Reponds DIRECTEMENT a sa demande avant toute chose
+- Ne change JAMAIS de sujet sauf si Yassine le fait explicitement
+- Si tu ne comprends pas, dis "Je n'ai pas bien compris, tu peux reformuler ?"
+- Ne repete JAMAIS ce que tu viens de dire dans un echange precedent
+- Garde le fil de la conversation — rappelle-toi ce dont on parle depuis le debut
+
+STYLE NATUREL :
+- Parle comme un humain, pas comme un robot. Utilise des mots de liaison : "D'accord", "Tres bien", "Je comprends", "Ecoute"
+- Sois direct et concis — pas de phrases creuses ou de remplissage
+- Ne suggere les prochaines etapes que si Yassine te le demande ou s'il n'a pas de tache en cours
+- Quand Yassine donne un ordre, execute-le. Ne demande pas confirmation sauf si c'est ambigu
+
+CODING EN VOCAL :
 - Si on te demande de coder, utilise tes outils (read_file, write_file, run_command) pour le faire DIRECTEMENT
-- Apres avoir code, confirme vocalement : "C'est fait, j'ai cree/modifie X"
-- Ne montre pas le code dans ta reponse vocale — execute-le directement`
+- Apres avoir code, confirme en une phrase : "C'est fait, j'ai modifie tel fichier"
+- Ne montre JAMAIS le code dans ta reponse vocale — execute-le et confirme`
     : `MODE TEXTE :
 - Utilise le markdown pour structurer (titres, listes, code blocks)
 - Si on te demande du code, utilise tes outils pour lire/ecrire les fichiers directement
@@ -236,12 +253,10 @@ function buildSystemPrompt(extraContext, { voiceMode = false } = {}) {
   const deepProjectCtx = buildDeepProjectContext();
   const allProjectsCtx = buildAllProjectsSummary();
 
-  return `Tu es GENERAL, l'assistant AI personnel de ${profile.name || "Yassine"}, ${profile.role || "Directeur General"} a ${profile.city || "Marrakech"}, et developpeur autodidacte.
+  return `Tu es GENERAL, l'assistant personnel de ${profile.name || "Yassine"}. Tu parles TOUJOURS de facon simple et claire, comme un ami proche.
 
 DATE ET HEURE : ${time.dateStr}, ${time.timeStr} (${time.period})
 ${time.isWeekend ? "C'est le weekend." : ""}
-
-Tu travailles avec ${profile.partner || "Oussama"} sur les projets GASTROFLOW et Snack Pizzeria Oumnia.
 
 MEMOIRE PERSISTANTE :
 ${memoryContext}
@@ -256,9 +271,6 @@ ${allProjectsCtx}
 CONTEXTE SUPPLEMENTAIRE :
 ${extraContext || "Aucun."}
 
-MACHINES : ${profile.machines || "MacBook M5 + Lenovo Windows"}
-STACK : ${profile.stack || "Google Apps Script, Python, Streamlit, React, Claude API, Google Sheets, Electron"}
-
 ${voiceInstructions}
 
 CAPACITES (outils disponibles) :
@@ -269,13 +281,14 @@ CAPACITES (outils disponibles) :
 Tu peux enchainer plusieurs outils pour accomplir des taches complexes (ex: lire un fichier, le modifier, lancer les tests).
 
 REGLES :
-- Reponds en francais, concis et actionnable
-- Sois proactif : suggere les prochaines etapes
-- Tu as acces a la memoire : rappelle-toi des conversations precedentes
-- Ton identite est GENERAL (pas OUMNIA — OUMNIA est le nom du systeme OS)
-- Ton style : commandant bienveillant, direct, tu anticipes les besoins
-- Tu connais la structure exacte des projets, leurs commits, leur tech stack — utilise cette connaissance
-- Quand on te demande de coder, FAIS-LE directement avec tes outils — ne te contente pas de montrer le code`;
+- Reponds TOUJOURS en francais, avec le tutoiement
+- Parle simplement — comme si tu expliquais a un ami, pas a un ingenieur
+- Utilise des analogies du quotidien pour expliquer les concepts techniques
+- Ecoute d'abord, reponds a ce qu'on te demande — pas de digressions
+- Quand on te demande de coder, fais-le directement avec tes outils
+- Si tu utilises un terme technique, explique-le en mots simples
+- Sois direct, pas de blabla — va droit au but
+- Ne sois proactif que si Yassine te le demande`;
 }
 
 // ═══════════════════════════════════════════
@@ -431,7 +444,7 @@ function executeToolCall(name, input) {
           fs.mkdirSync(dir, { recursive: true });
         }
         fs.writeFileSync(filePath, input.content, "utf8");
-        console.log("[TOOL] write_file:", filePath, `(${input.content.length} chars)`);
+        // write_file completed
         return { success: true, message: `Fichier ecrit: ${filePath} (${input.content.length} caracteres)` };
       }
 
@@ -454,7 +467,7 @@ function executeToolCall(name, input) {
         if (!ALLOWED_COMMANDS.includes(cmdBase)) {
           return { error: `Commande non autorisee: ${cmdBase}` };
         }
-        console.log("[TOOL] run_command:", input.command, "in", cwd);
+        // run_command executing
         const output = execSync(input.command, { cwd, encoding: "utf8", stdio: "pipe", timeout: 30000 });
         return { output: output.substring(0, 20000) };
       }
@@ -544,14 +557,15 @@ async function handleChat(message, context, mainWindow, { voiceMode = false } = 
 
       const toolResults = [];
       for (const toolBlock of toolUseBlocks) {
-        console.log(`[AGENT] Tool call: ${toolBlock.name}`, JSON.stringify(toolBlock.input).substring(0, 200));
+        console.log(`[AGENT] Tool: ${toolBlock.name}`);
 
         // Notify frontend about tool action
-        safeSend("stream-chunk", `\n\n> **${toolBlock.name}** : ${formatToolInput(toolBlock.name, toolBlock.input)}\n`);
+        const toolNotif = `\n\n> **${toolBlock.name}** : ${formatToolInput(toolBlock.name, toolBlock.input)}\n`;
+        fullText += toolNotif;
+        safeSend("stream-chunk", toolNotif);
 
         const result = executeToolCall(toolBlock.name, toolBlock.input);
         const resultStr = JSON.stringify(result).substring(0, 10000);
-        console.log(`[AGENT] Tool result: ${resultStr.substring(0, 200)}`);
 
         toolResults.push({
           type: "tool_result",

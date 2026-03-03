@@ -5,15 +5,24 @@
 // ═══════════════════════════════════════════
 
 const COMMANDS = {
-  repos: ["repos général", "repos general", "repose-toi", "dors", "sleep"],
-  wake: ["oumnia", "réveille", "reveille", "reveille-toi", "wake"],
+  repos: ["repos général", "repos general", "général repos", "general repos", "repose-toi", "dors", "sleep"],
+  wake: ["général activé", "general activé", "général active", "general active", "oumnia", "réveille", "reveille", "reveille-toi", "wake"],
 };
 
+// Normalize: strip accents + lowercase for robust matching
+function normalizeText(str) {
+  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
 function detectCommand(transcript) {
-  const lower = transcript.toLowerCase().trim();
+  const normalized = normalizeText(transcript);
+  // Pass 1: contiguous keyword match (fast path)
   for (const [cmd, keywords] of Object.entries(COMMANDS)) {
-    if (keywords.some((k) => lower.includes(k))) return cmd;
+    if (keywords.some((k) => normalized.includes(normalizeText(k)))) return cmd;
   }
+  // Pass 2: word-pair match (handles SFSpeechRecognizer inserting words between)
+  if (normalized.includes("general") && /activ/.test(normalized)) return "wake";
+  if (normalized.includes("repos") && normalized.includes("general")) return "repos";
   return null;
 }
 
@@ -22,55 +31,56 @@ export function createVoiceInput() {
   let resultCallback = null;
   let commandCallback = null;
   let errorCallback = null;
+  let lastActivity = Date.now();
   const isElectron = !!window.oumniaAPI?.startNativeSpeech;
 
-  function log(msg) {
-    console.log(msg);
-    if (window.oumniaAPI?.logToMain) window.oumniaAPI.logToMain(msg);
-  }
+  function log() {}
 
   // ═══ NATIVE macOS path (Electron) ═══
   if (isElectron) {
     log("[VOICE-IN] Using NATIVE macOS SFSpeechRecognizer");
+
+    // Wire IPC listeners ONCE at creation time (not inside start)
+    window.oumniaAPI.onNativeSpeechResult(({ text, isFinal }) => {
+      lastActivity = Date.now();
+      log(`[VOICE-IN] Native result: ${isFinal ? "FINAL" : "interim"} "${text.substring(0, 50)}"`);
+
+      if (isFinal) {
+        const cmd = detectCommand(text);
+        if (cmd && commandCallback) {
+          commandCallback(cmd);
+          return;
+        }
+      }
+      if (resultCallback) resultCallback(text, isFinal);
+    });
+
+    window.oumniaAPI.onNativeSpeechStatus((status) => {
+      lastActivity = Date.now();
+      log(`[VOICE-IN] Native status: ${status}`);
+      if (status === "stopped" || status === "no_permission") {
+        listening = false;
+        if (status === "no_permission" && errorCallback) {
+          errorCallback("not-allowed");
+        }
+      }
+      if (status === "listening") {
+        listening = true;
+      }
+    });
+
+    window.oumniaAPI.onNativeSpeechError((error) => {
+      lastActivity = Date.now();
+      log(`[VOICE-IN] Native error: ${error}`);
+      listening = false; // Allow watchdog recovery
+      if (errorCallback) errorCallback(error);
+    });
 
     const controller = {
       start() {
         if (listening) return;
         log("[VOICE-IN] Starting native speech");
         listening = true;
-
-        // Wire IPC listeners
-        window.oumniaAPI.onNativeSpeechResult(({ text, isFinal }) => {
-          log(`[VOICE-IN] Native result: ${isFinal ? "FINAL" : "interim"} "${text.substring(0, 50)}"`);
-
-          if (isFinal) {
-            const cmd = detectCommand(text);
-            if (cmd && commandCallback) {
-              commandCallback(cmd);
-              return;
-            }
-          }
-          if (resultCallback) resultCallback(text, isFinal);
-        });
-
-        window.oumniaAPI.onNativeSpeechStatus((status) => {
-          log(`[VOICE-IN] Native status: ${status}`);
-          if (status === "stopped" || status === "no_permission") {
-            listening = false;
-            if (status === "no_permission" && errorCallback) {
-              errorCallback("not-allowed");
-            }
-          }
-          if (status === "listening") {
-            listening = true;
-          }
-        });
-
-        window.oumniaAPI.onNativeSpeechError((error) => {
-          log(`[VOICE-IN] Native error: ${error}`);
-          if (errorCallback) errorCallback(error);
-        });
-
         window.oumniaAPI.startNativeSpeech();
       },
 
@@ -82,6 +92,10 @@ export function createVoiceInput() {
 
       isListening() {
         return listening;
+      },
+
+      getLastActivity() {
+        return lastActivity;
       },
 
       set onResult(cb) { resultCallback = cb; },
@@ -172,6 +186,7 @@ export function createVoiceInput() {
     },
 
     isListening() { return listening; },
+    getLastActivity() { return lastActivity; },
     set onResult(cb) { resultCallback = cb; },
     set onCommand(cb) { commandCallback = cb; },
     set onError(cb) { errorCallback = cb; },

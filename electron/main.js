@@ -8,6 +8,7 @@ const { migrate } = require("./migrate");
 const { close: closeDb } = require("./database");
 const { handleChat, getGreetingContext, buildSystemPrompt, setCurrentProject, setAllProjectScans } = require("./agent-core");
 const nativeSpeech = require("./native-speech");
+const terminalManager = require("./terminal-manager");
 const os = require("os");
 const { execSync } = require("child_process");
 
@@ -24,6 +25,15 @@ const { execSync } = require("child_process");
   patchStream(process.stdout);
   patchStream(process.stderr);
 })();
+
+// Global crash protection — catch EPIPE and other uncaught errors
+process.on("uncaughtException", (err) => {
+  if (err.code === "EPIPE" || err.code === "ERR_IPC_CHANNEL_CLOSED") return;
+  console.error("[OUMNIA] Uncaught exception:", err.message);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[OUMNIA] Unhandled rejection:", reason?.message || reason);
+});
 
 // Load .env manually for reliability
 const envPath = path.join(__dirname, "..", ".env");
@@ -83,20 +93,17 @@ function setupNativeSpeech() {
     }
   };
   nativeSpeech.onStatus = (status) => {
-    console.log("[MAIN] Native speech status:", status);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("native-speech-status", status);
     }
   };
   nativeSpeech.onError = (error) => {
-    console.error("[MAIN] Native speech error:", error);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("native-speech-error", error);
     }
   };
 
   ipcMain.handle("native-speech-start", () => {
-    console.log("[MAIN] Starting native speech");
     return nativeSpeech.start();
   });
   ipcMain.handle("native-speech-stop", () => {
@@ -113,6 +120,45 @@ function setupStreamingChat() {
   ipcMain.on("chat-stream", (_, { message, context, voiceMode }) => {
     if (!mainWindow) return;
     handleChat(message, context, mainWindow, { voiceMode: !!voiceMode });
+  });
+}
+
+// ═══ INTEGRATED TERMINAL (xterm.js + node-pty) ═══
+function setupTerminal() {
+  ipcMain.handle("terminal-spawn", async (_, { cwd }) => {
+    try {
+      const { id, pid } = terminalManager.spawn(cwd);
+      const proc = terminalManager.getProcess(id);
+      if (proc) {
+        proc.onData((data) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("terminal-output", { id, data });
+          }
+        });
+        proc.onExit(({ exitCode }) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("terminal-exit", { id, code: exitCode });
+          }
+        });
+      }
+      return { success: true, id, pid };
+    } catch (err) {
+      console.error("[TERMINAL] Spawn error:", err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.on("terminal-input", (_, { id, data }) => {
+    terminalManager.write(id, data);
+  });
+
+  ipcMain.on("terminal-resize", (_, { id, cols, rows }) => {
+    terminalManager.resize(id, cols, rows);
+  });
+
+  ipcMain.handle("terminal-kill", async (_, { id }) => {
+    terminalManager.kill(id);
+    return { success: true };
   });
 }
 
@@ -213,8 +259,8 @@ function setupProjectScanner() {
           }
           let git = null;
           try {
-            const branch = execSync("git branch --show-current", { cwd: fullPath, encoding: "utf8", stdio: "pipe" }).trim();
-            const status = execSync("git status --porcelain", { cwd: fullPath, encoding: "utf8", stdio: "pipe" }).trim();
+            const branch = execSync("git branch --show-current", { cwd: fullPath, encoding: "utf8", stdio: "pipe", timeout: 5000 }).trim();
+            const status = execSync("git status --porcelain", { cwd: fullPath, encoding: "utf8", stdio: "pipe", timeout: 5000 }).trim();
             git = { branch, dirty: status.length > 0 };
           } catch {}
           projects.push({
@@ -410,7 +456,7 @@ function setupDeepScan() {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.writeFileSync(filePath, content, "utf8");
-      console.log("[TOOL] Wrote file:", filePath, `(${content.length} chars)`);
+      // File written successfully
       return { success: true, bytesWritten: content.length };
     } catch (err) {
       return { success: false, error: err.message };
@@ -446,7 +492,7 @@ function setupDeepScan() {
       if (!ALLOWED_COMMANDS.includes(cmdBase)) {
         return { success: false, error: `Commande non autorisee: ${cmdBase}. Autorisees: ${ALLOWED_COMMANDS.join(", ")}` };
       }
-      console.log("[TOOL] Running:", command, "in", cwd);
+      // Execute whitelisted command
       const output = execSync(command, { cwd, encoding: "utf8", stdio: "pipe", timeout: 30000 });
       return { success: true, output: output.substring(0, 20000) };
     } catch (err) {
@@ -529,6 +575,7 @@ app.whenReady().then(() => {
   setupDeepScan();
   setupSystemInfo();
   setupNativeSpeech();
+  setupTerminal();
   createWindow();
 
   // Grant microphone + audio permissions
@@ -551,6 +598,7 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
+  terminalManager.killAll();
   nativeSpeech.quit();
   closeDb();
 });

@@ -106,6 +106,7 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
             output(["error": "audio_engine_failed", "message": error.localizedDescription])
             cleanupAudio()
             isTransitioning = false
+            scheduleRestart(delay: 3.0)
             return
         }
 

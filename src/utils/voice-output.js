@@ -10,29 +10,23 @@ export function createVoiceOutput() {
   let boundaryCallback = null;
   let cachedVoice = null;
 
-  console.log("[VOICE-OUT] Initializing voice output");
-
   function waitForVoices() {
     return new Promise((resolve) => {
       if (!window.speechSynthesis) {
-        console.warn("[VOICE-OUT] speechSynthesis not available");
         resolve([]);
         return;
       }
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
-        console.log("[VOICE-OUT] Voices already loaded:", voices.length);
         resolve(voices);
         return;
       }
-      console.log("[VOICE-OUT] Waiting for voices to load...");
       let elapsed = 0;
       const interval = setInterval(() => {
         elapsed += 100;
         const v = window.speechSynthesis.getVoices();
         if (v.length > 0 || elapsed >= 3000) {
           clearInterval(interval);
-          console.log("[VOICE-OUT] Voices loaded:", v.length, `(${elapsed}ms)`);
           resolve(v);
         }
       }, 100);
@@ -48,9 +42,6 @@ export function createVoiceOutput() {
       voices.find((v) => v.lang === "fr-FR") ||
       voices.find((v) => v.lang.startsWith("fr")) ||
       voices[0] || null;
-    if (cachedVoice) {
-      console.log("[VOICE-OUT] Selected voice:", cachedVoice.name, cachedVoice.lang);
-    }
     return cachedVoice;
   }
 
@@ -83,8 +74,6 @@ export function createVoiceOutput() {
       utterance.rate = 1.05;
       utterance.pitch = 0.8;
 
-      console.log("[VOICE-OUT] Speaking:", text.substring(0, 60) + (text.length > 60 ? "..." : ""));
-
       return new Promise((resolve) => {
         // Chrome bug workaround: pause/resume every 14s
         resumeInterval = setInterval(() => {
@@ -106,7 +95,6 @@ export function createVoiceOutput() {
         };
 
         utterance.onend = () => {
-          console.log("[VOICE-OUT] Speak end");
           speaking = false;
           clearInterval(resumeInterval);
           resumeInterval = null;
@@ -115,8 +103,7 @@ export function createVoiceOutput() {
           resolve();
         };
 
-        utterance.onerror = (e) => {
-          console.error("[VOICE-OUT] Error:", e.error);
+        utterance.onerror = () => {
           speaking = false;
           clearInterval(resumeInterval);
           resumeInterval = null;
