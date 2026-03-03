@@ -48,6 +48,16 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Chat messages scrollbar — thinner, always visible */
+.chat-messages {
+  overflow-y: scroll !important;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-messages::-webkit-scrollbar { width: 5px !important; }
+.chat-messages::-webkit-scrollbar-track { background: rgba(0, 229, 255, 0.02) !important; border-radius: 3px !important; }
+.chat-messages::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.25) !important; border-radius: 3px !important; }
+.chat-messages::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.45) !important; }
+
 /* Animations */
 @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }

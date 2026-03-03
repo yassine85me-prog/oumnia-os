@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import JarvisHologram from "./components/JarvisHologram";
+import GeneralHologram from "./components/GeneralHologram";
+import MessageBubble from "./components/MessageBubble";
 import { USER, DEFAULT_PROJECTS, AGENTS, FOCUS_TASKS, QUICK_ACCESS, NAV_ITEMS } from "./data/config";
+import { createVoiceOutput } from "./utils/voice-output";
+import { createVoiceInput } from "./utils/voice-input";
 
 // ═══════════════════════════════════════════
 // OUMNIA OS — Main Application
@@ -26,14 +29,29 @@ function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [hoveredAgent, setHoveredAgent] = useState(null);
   const chatEndRef = useRef(null);
-  const [hologramState, setHologramState] = useState("idle");
+  const [generalState, setGeneralState] = useState("idle");
   const [chatOpen, setChatOpen] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const streamingRef = useRef("");
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [voiceMode, setVoiceMode] = useState(true);
+  const voiceOutputRef = useRef(null);
+  const voiceInputRef = useRef(null);
+  const audioLevelRef = useRef(0);
+  const spokenIndexRef = useRef(0);
+  const sentenceQueueRef = useRef([]);
+  const voiceModeRef = useRef(false);
+  const projectsRef = useRef(projects);
 
   const maxXp = 500;
   const activeProjects = projects.filter((p) => p.status === "in_progress");
   const totalProgress = activeProjects.length > 0
     ? Math.round(activeProjects.reduce((a, p) => a + p.progress, 0) / activeProjects.length)
     : 0;
+
+  // Keep refs in sync
+  useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
+  useEffect(() => { projectsRef.current = projects; }, [projects]);
 
   // ═══ Greeting ═══
   const getGreeting = () => {
@@ -43,11 +61,80 @@ function App() {
 
   const fullGreeting = `${getGreeting()} ${USER.name} ! Bienvenue dans ton Command Center. Tu as ${activeProjects.length} projets actifs avec une progression moyenne de ${totalProgress}%. Je te suggère de commencer par configurer les clés API ImagineArt — c'est le blocker principal pour tester le pipeline vidéo.`;
 
+  // ═══ Speech Queue Processor ═══
+  const processSpeechQueue = useCallback(async () => {
+    const voiceOut = voiceOutputRef.current;
+    if (!voiceOut || voiceOut.isSpeaking()) return;
+
+    const next = sentenceQueueRef.current.shift();
+    if (next) {
+      setGeneralState("speaking");
+      try {
+        await voiceOut.speak(next);
+      } catch {}
+      processSpeechQueue();
+    }
+  }, []);
+
+  // ═══ Voice Transcript Handler ═══
+  const handleVoiceTranscript = useCallback((text) => {
+    // Interrupt GENERAL if he's speaking
+    voiceOutputRef.current?.stop();
+    sentenceQueueRef.current = [];
+
+    setChatInput("");
+    setChatHistory((prev) => [...prev, { role: "user", text }]);
+    setChatLoading(true);
+    setGeneralState("thinking");
+    streamingRef.current = "";
+    setStreamingText("");
+    spokenIndexRef.current = 0;
+
+    // Pause voice input while processing
+    voiceInputRef.current?.stop();
+
+    // Send immediately — no blocking micro-ack
+    if (isElectron) {
+      const projectContext = projectsRef.current
+        .map((p) => `- ${p.name}: ${p.status} (${p.progress}%) — ${p.desc}`)
+        .join("\n");
+      window.oumniaAPI.chatStream(text, projectContext, true);
+    }
+  }, []);
+
+  // ═══ Command Handlers ═══
+  const handleReposCommand = useCallback(() => {
+    setGeneralState("repos");
+    setVoiceMode(false);
+    voiceInputRef.current?.stop();
+    voiceOutputRef.current?.stop();
+  }, []);
+
+  const handleWakeCommand = useCallback(() => {
+    setGeneralState("idle");
+    setVoiceMode(true);
+    voiceOutputRef.current?.speak("Je suis de retour. Je t'écoute.").then(() => {
+      setGeneralState("listening");
+      voiceInputRef.current?.start();
+    });
+  }, []);
+
   // ═══ Init ═══
   useEffect(() => {
     setTimeout(() => setLoaded(true), 200);
     const timer = setInterval(() => setTime(new Date()), 1000);
     let typingInterval;
+
+    const speakGreeting = (text) => {
+      setGeneralState("speaking");
+      voiceOutputRef.current?.speak(text).then(() => {
+        setGeneralState("listening");
+        voiceInputRef.current?.start();
+      }).catch(() => {
+        setGeneralState("listening");
+        voiceInputRef.current?.start();
+      });
+    };
 
     const typeText = (text, onDone) => {
       let i = 0;
@@ -65,39 +152,47 @@ function App() {
     };
 
     if (isElectron) {
-      setHologramState("thinking");
-      Promise.all([
-        window.oumniaAPI.memoryLoad(),
-        window.oumniaAPI.scanProjects(),
-      ]).then(async ([memRes, scanRes]) => {
-        let context = "";
-        if (memRes.success && memRes.data) {
-          const mem = memRes.data;
-          context += `Sessions: ${mem.stats?.sessionsCount || 0}, Interactions: ${mem.stats?.totalInteractions || 0}\n`;
-          if (mem.conversations?.length > 0) {
-            context += `Derniere conversation: ${mem.conversations[0].summary}\n`;
-          }
+      setGeneralState("thinking");
+      window.oumniaAPI.getGreetingContext().then(async (ctx) => {
+        if (!ctx.success) {
+          setGeneralState("speaking");
+          typeText(fullGreeting, () => speakGreeting(fullGreeting));
+          return;
         }
-        if (scanRes.success && scanRes.projects?.length > 0) {
-          context += `Projets detectes: ${scanRes.projects.map(p => p.name).join(", ")}\n`;
-        }
-        const welcomePrompt = `Genere un message d'accueil personnalise et court (2-3 phrases max) pour Yassine. Il a ${activeProjects.length} projets actifs avec ${totalProgress}% de progression moyenne. Sois chaleureux et proactif. Suggere une action concrete.`;
+
+        const alerts = ctx.alerts?.length > 0
+          ? `ALERTES : ${ctx.alerts.join(" | ")}`
+          : "";
+
+        const welcomePrompt = `Genere un message d'accueil court (2-3 phrases max, pas d'emoji) pour ${ctx.profile?.name || "Yassine"}.
+
+CONTEXTE :
+- ${ctx.time?.dateStr || "Aujourd'hui"}, ${ctx.time?.timeStr || ""} (${ctx.time?.period || ""})
+- ${ctx.projects?.activeCount || 0} projets actifs, progression moyenne ${ctx.projects?.averageProgress || 0}%
+- Sessions totales : ${ctx.stats?.sessionsCount || 0}, Interactions : ${ctx.stats?.totalInteractions || 0}
+${ctx.sessionGap?.days >= 1 ? `- Derniere session il y a ${ctx.sessionGap.days} jour(s)` : ""}
+${alerts}
+${ctx.timeSuggestion || ""}
+
+TON = commandant bienveillant : concis, professionnel, une suggestion d'action concrete basee sur les alertes.
+NE DIS PAS "Bonjour" de maniere generique — donne un briefing contextuel.`;
+
         try {
-          const res = await window.oumniaAPI.chat(welcomePrompt, context);
+          const res = await window.oumniaAPI.chat(welcomePrompt, "");
           if (res.success) {
-            setHologramState("speaking");
-            typeText(res.text, () => setTimeout(() => setHologramState("idle"), 1500));
+            setGeneralState("speaking");
+            typeText(res.text, () => speakGreeting(res.text));
           } else {
-            setHologramState("speaking");
-            typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+            setGeneralState("speaking");
+            typeText(fullGreeting, () => speakGreeting(fullGreeting));
           }
         } catch {
-          setHologramState("speaking");
-          typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+          setGeneralState("speaking");
+          typeText(fullGreeting, () => speakGreeting(fullGreeting));
         }
       }).catch(() => {
-        setHologramState("speaking");
-        typeText(fullGreeting, () => setTimeout(() => setHologramState("idle"), 1500));
+        setGeneralState("speaking");
+        typeText(fullGreeting, () => speakGreeting(fullGreeting));
       });
 
       // Load projects from Google Sheets if available
@@ -106,66 +201,305 @@ function App() {
           setProjects(res.projects);
         }
       });
+
+      // Deep scan all projects in background — GENERAL learns everything
+      window.oumniaAPI.scanProjects().then(async (res) => {
+        if (!res.success || !res.projects?.length) return;
+        console.log("[DEEP-SCAN] Scanning", res.projects.length, "projects...");
+        const scans = [];
+        for (const proj of res.projects) {
+          try {
+            const scan = await window.oumniaAPI.deepScanProject(proj.path);
+            if (scan.success) {
+              scans.push(scan);
+            }
+          } catch (err) {
+            console.warn("[DEEP-SCAN] Failed:", proj.name, err);
+          }
+        }
+        if (scans.length > 0) {
+          console.log("[DEEP-SCAN] Completed:", scans.length, "projects scanned");
+          // Send all scans to backend for system prompt enrichment
+          window.oumniaAPI.setAllProjectScans(scans);
+          // Auto-select the most recently modified project as "current"
+          const sorted = [...scans].sort((a, b) => {
+            const aTime = a.recentCommits?.[0]?.time || "";
+            const bTime = b.recentCommits?.[0]?.time || "";
+            return aTime.localeCompare(bTime);
+          });
+          if (sorted.length > 0) {
+            window.oumniaAPI.setCurrentProject(sorted[0]);
+            console.log("[DEEP-SCAN] Current project:", sorted[0].name);
+          }
+        }
+      }).catch((err) => console.warn("[DEEP-SCAN] Error:", err));
+
       // Load saved XP
       window.oumniaAPI.storeGet("xp").then((val) => val && setXp(val));
       window.oumniaAPI.storeGet("level").then((val) => val && setLevel(val));
     } else {
-      typeText(fullGreeting);
+      typeText(fullGreeting, () => {
+        setGeneralState("listening");
+      });
     }
 
     return () => { clearInterval(timer); if (typingInterval) clearInterval(typingInterval); };
   }, []);
 
+  // ═══ Setup streaming listeners ═══
+  useEffect(() => {
+    if (!isElectron) return;
+
+    window.oumniaAPI.onStreamChunk((chunk) => {
+      streamingRef.current += chunk;
+      setStreamingText(streamingRef.current);
+
+      // Detect code blocks -> coding state, otherwise speaking
+      if (streamingRef.current.includes("```")) {
+        setGeneralState("coding");
+      } else {
+        setGeneralState("speaking");
+      }
+
+      // Sentence-by-sentence TTS when voice mode is on
+      if (voiceModeRef.current) {
+        const fullText = streamingRef.current;
+        // Strip code blocks for speech
+        const textForSpeech = fullText.replace(/```[\s\S]*?```/g, " bloc de code ");
+        const spokenSoFar = spokenIndexRef.current;
+        const unspoken = textForSpeech.substring(spokenSoFar);
+
+        // Extract complete sentences
+        const sentenceRegex = /[^.!?\n]*[.!?\n]+[\s]?/g;
+        let match;
+        let lastEnd = 0;
+        while ((match = sentenceRegex.exec(unspoken)) !== null) {
+          const sentence = match[0].trim();
+          if (sentence.length > 2) {
+            sentenceQueueRef.current.push(sentence);
+          }
+          lastEnd = match.index + match[0].length;
+        }
+        if (lastEnd > 0) {
+          spokenIndexRef.current += lastEnd;
+        }
+        processSpeechQueue();
+      }
+    });
+
+    window.oumniaAPI.onStreamEnd((fullText) => {
+      setChatHistory((prev) => [...prev, { role: "ai", text: fullText }]);
+      setStreamingText("");
+      streamingRef.current = "";
+      setChatLoading(false);
+
+      if (voiceModeRef.current) {
+        // Speak any remaining unspoken text
+        const textForSpeech = fullText.replace(/```[\s\S]*?```/g, " bloc de code ");
+        const remaining = textForSpeech.substring(spokenIndexRef.current).trim();
+        spokenIndexRef.current = 0;
+        sentenceQueueRef.current = [];
+
+        // Start listening immediately — don't wait for speech to finish
+        // User can interrupt GENERAL by speaking (handled in handleVoiceTranscript)
+        voiceInputRef.current?.start();
+        setGeneralState("speaking");
+
+        const onSpeechDone = () => {
+          // Only switch to listening if still in speaking state (not interrupted)
+          setGeneralState((prev) => prev === "speaking" ? "listening" : prev);
+        };
+
+        if (remaining.length > 2) {
+          voiceOutputRef.current?.speak(remaining).then(onSpeechDone).catch(onSpeechDone);
+        } else {
+          const waitForSpeech = () => {
+            if (voiceOutputRef.current?.isSpeaking()) {
+              setTimeout(waitForSpeech, 200);
+            } else {
+              onSpeechDone();
+            }
+          };
+          waitForSpeech();
+        }
+      } else {
+        setTimeout(() => setGeneralState("idle"), 1500);
+      }
+
+      // XP reward
+      setXp((prevXp) => {
+        const newXp = prevXp + 10;
+        if (newXp >= maxXp) {
+          setLevel((l) => {
+            const newLevel = l + 1;
+            window.oumniaAPI.storeSet("level", newLevel);
+            return newLevel;
+          });
+          const remainder = newXp - maxXp;
+          window.oumniaAPI.storeSet("xp", remainder);
+          return remainder;
+        }
+        window.oumniaAPI.storeSet("xp", newXp);
+        return newXp;
+      });
+    });
+
+    window.oumniaAPI.onStreamError((error) => {
+      setChatHistory((prev) => [
+        ...prev,
+        { role: "ai", text: `Erreur : ${error}` },
+      ]);
+      setStreamingText("");
+      streamingRef.current = "";
+      setChatLoading(false);
+      // Restart listening if voice mode is active
+      if (voiceModeRef.current) {
+        setGeneralState("listening");
+        voiceInputRef.current?.start();
+      } else {
+        setGeneralState("idle");
+      }
+    });
+  }, [processSpeechQueue]);
+
+  // ═══ Voice System Init ═══
+  useEffect(() => {
+    const voiceOut = createVoiceOutput();
+    const voiceIn = createVoiceInput();
+    voiceOutputRef.current = voiceOut;
+    voiceInputRef.current = voiceIn;
+
+    // Wire audioLevel from speech boundary events
+    voiceOut.onBoundary = (level) => {
+      audioLevelRef.current = level;
+    };
+
+    // Wire voice input callbacks
+    voiceIn.onResult = (transcript, isFinal) => {
+      setChatInput(transcript);
+      if (isFinal && transcript.trim()) {
+        handleVoiceTranscript(transcript.trim());
+      }
+    };
+
+    voiceIn.onCommand = (cmd) => {
+      if (cmd === "repos") {
+        handleReposCommand();
+      } else if (cmd === "wake") {
+        handleWakeCommand();
+      }
+    };
+
+    voiceIn.onError = (error) => {
+      console.warn("[VOICE] Input error:", error);
+      if (error === "not-allowed") {
+        setChatHistory(prev => [...prev, { role: "ai", text: "\u26a0\ufe0f Acc\u00e8s au micro refus\u00e9. V\u00e9rifie les permissions." }]);
+        setVoiceMode(false);
+        setGeneralState("idle");
+      }
+    };
+
+    // Auto-start voice input after app is ready (delay to avoid boot race)
+    const autoStartTimer = setTimeout(() => {
+      if (!voiceIn.isListening()) {
+        console.log("[VOICE] Auto-starting voice input");
+        voiceIn.start();
+      }
+    }, 3000);
+
+    // ═══ WATCHDOG — JARVIS never sleeps ═══
+    // Every 2s: if voiceMode is ON, not speaking/thinking, and mic is dead → force restart
+    const watchdog = setInterval(() => {
+      const vm = voiceModeRef.current;
+      const speaking = voiceOut.isSpeaking();
+      const listening = voiceIn.isListening();
+
+      if (vm && !speaking && !listening) {
+        console.log("[VOICE-WATCHDOG] Mic down — forcing restart");
+        voiceIn.start();
+        setGeneralState((prev) => {
+          // Only override to "listening" if we're in a stale state
+          if (prev === "idle" || prev === "speaking") return "listening";
+          return prev; // Don't override thinking/coding
+        });
+      }
+    }, 2000);
+
+    // Sync audioLevel ref -> state at ~15fps with decay
+    const levelInterval = setInterval(() => {
+      setAudioLevel(audioLevelRef.current);
+      audioLevelRef.current *= 0.85;
+    }, 66);
+
+    return () => {
+      clearTimeout(autoStartTimer);
+      clearInterval(watchdog);
+      clearInterval(levelInterval);
+      voiceOut.stop();
+      voiceIn.stop();
+    };
+  }, [handleVoiceTranscript, handleReposCommand, handleWakeCommand]);
+
   // ═══ Chat with Claude ═══
-  const sendChat = useCallback(async () => {
+  const sendChat = useCallback(() => {
     if (!chatInput.trim() || chatLoading) return;
     const msg = chatInput.trim();
     setChatInput("");
     setChatHistory((prev) => [...prev, { role: "user", text: msg }]);
     setChatLoading(true);
-    setHologramState("thinking");
+    setGeneralState("thinking");
+    streamingRef.current = "";
+    setStreamingText("");
+    spokenIndexRef.current = 0;
+    sentenceQueueRef.current = [];
 
     if (isElectron) {
       const projectContext = projects
         .map((p) => `- ${p.name}: ${p.status} (${p.progress}%) — ${p.desc}`)
         .join("\n");
-      const res = await window.oumniaAPI.chat(msg, projectContext);
-      setHologramState("speaking");
-      setChatHistory((prev) => [
-        ...prev,
-        { role: "ai", text: res.success ? res.text : `⚠️ ${res.error}` },
-      ]);
-
-      // XP reward for interaction
-      const newXp = xp + 10;
-      if (newXp >= maxXp) {
-        setLevel((l) => l + 1);
-        setXp(newXp - maxXp);
-        if (isElectron) {
-          window.oumniaAPI.storeSet("level", level + 1);
-          window.oumniaAPI.storeSet("xp", newXp - maxXp);
-        }
-      } else {
-        setXp(newXp);
-        if (isElectron) window.oumniaAPI.storeSet("xp", newXp);
-      }
+      window.oumniaAPI.chatStream(msg, projectContext, voiceMode);
     } else {
       // Fallback when not in Electron
       setTimeout(() => {
         setChatHistory((prev) => [
           ...prev,
-          { role: "ai", text: "Mode démo — connecte l'API Claude via le fichier .env pour activer l'agent AI." },
+          { role: "ai", text: "Mode demo — connecte l'API Claude via le fichier .env pour activer l'agent AI." },
         ]);
+        setChatLoading(false);
+        setGeneralState("idle");
       }, 1000);
     }
+  }, [chatInput, chatLoading, projects]);
 
-    setChatLoading(false);
-    setTimeout(() => setHologramState("idle"), 1500);
-  }, [chatInput, chatLoading, projects, xp, level]);
+  // ═══ Voice Toggle ═══
+  const toggleVoice = useCallback(() => {
+    if (voiceMode) {
+      // Disable voice mode
+      console.log("[VOICE] Disabling voice mode");
+      setVoiceMode(false);
+      voiceInputRef.current?.stop();
+      voiceOutputRef.current?.stop();
+      setGeneralState("idle");
+      setChatInput("");
+    } else {
+      // Check SpeechRecognition availability before enabling
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        console.warn("[VOICE] SpeechRecognition not available");
+        setChatHistory(prev => [...prev, { role: "ai", text: "\u26a0\ufe0f Micro non disponible dans ce navigateur." }]);
+        return;
+      }
+      // Enable voice mode
+      console.log("[VOICE] Enabling voice mode");
+      setVoiceMode(true);
+      setGeneralState("listening");
+      voiceInputRef.current?.start();
+    }
+  }, [voiceMode]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory]);
+  }, [chatHistory, streamingText]);
 
   // ═══ Open links ═══
   const openLink = (url) => {
@@ -180,6 +514,18 @@ function App() {
   const dateStr = time.toLocaleDateString("fr-FR", {
     weekday: "long", day: "numeric", month: "long", year: "numeric",
   });
+
+  // ═══ Status display ═══
+  const stateColors = {
+    idle: "var(--green)", listening: "#00e676", thinking: "#7c4dff",
+    speaking: "var(--cyan)", coding: "#ff6d00", repos: "var(--text-muted)",
+  };
+  const stateLabels = {
+    idle: "READY", listening: "LISTENING", thinking: "THINKING",
+    speaking: "SPEAKING", coding: "CODING", repos: "REPOS",
+  };
+  const stateColor = stateColors[generalState] || "var(--green)";
+  const stateLabel = stateLabels[generalState] || "READY";
 
   // ═══════════════════════════════════════════
   // RENDER
@@ -222,7 +568,7 @@ function App() {
             padding: sidebarCollapsed ? "20px 12px" : "20px 16px",
             borderBottom: "1px solid var(--border)",
             display: "flex", alignItems: "center", gap: "10px", cursor: "pointer",
-            paddingTop: "28px", // Space for macOS traffic lights
+            paddingTop: "28px",
           }}
         >
           <div style={{
@@ -252,7 +598,10 @@ function App() {
               {sec.items.map((item) => (
                 <div
                   key={item.key}
-                  onClick={() => setActiveNav(item.key)}
+                  onClick={() => {
+                    setActiveNav(item.key);
+                    if (item.key === "agent") setChatOpen(true);
+                  }}
                   style={{
                     display: "flex", alignItems: "center", gap: "10px",
                     padding: sidebarCollapsed ? "10px 0" : "9px 16px",
@@ -390,21 +739,31 @@ function App() {
               <div style={{ width: "60px", height: "2px", background: "linear-gradient(90deg, var(--cyan), transparent)", marginTop: "8px" }} />
             </div>
 
-            {/* JARVIS */}
+            {/* GENERAL HOLOGRAM */}
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", animation: "fadeIn 1s ease-out 0.2s both" }}>
               <div style={{ fontSize: "10px", fontFamily: "var(--font-display)", color: "rgba(0,229,255,0.4)", letterSpacing: "4px", marginBottom: "-4px" }}>
-                O.U.M.N.I.A
+                G.E.N.E.R.A.L
               </div>
-              <JarvisHologram state={hologramState} onClick={() => setChatOpen(!chatOpen)} />
+              <GeneralHologram
+                state={generalState}
+                audioLevel={audioLevel}
+                onClick={() => {
+                  if (generalState === "repos") {
+                    handleWakeCommand();
+                  } else {
+                    setChatOpen(!chatOpen);
+                  }
+                }}
+              />
               <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "-4px" }}>
                 <div style={{
                   width: "5px", height: "5px", borderRadius: "50%",
-                  background: hologramState === "idle" ? "var(--green)" : "var(--cyan)",
-                  boxShadow: `0 0 8px ${hologramState === "idle" ? "var(--green)" : "var(--cyan)"}`,
-                  animation: hologramState !== "idle" ? "pulse 1s infinite" : "none",
+                  background: stateColor,
+                  boxShadow: `0 0 8px ${stateColor}`,
+                  animation: generalState !== "idle" ? "pulse 1s infinite" : "none",
                 }} />
-                <span style={{ fontSize: "9px", fontFamily: "var(--font-mono)", color: hologramState === "idle" ? "var(--green)" : "var(--cyan)", letterSpacing: "2px" }}>
-                  {hologramState === "thinking" ? "THINKING" : hologramState === "speaking" ? "SPEAKING" : "READY"}
+                <span style={{ fontSize: "9px", fontFamily: "var(--font-mono)", color: stateColor, letterSpacing: "2px" }}>
+                  {stateLabel}
                 </span>
               </div>
             </div>
@@ -447,7 +806,8 @@ function App() {
               width: "28px", height: "28px", borderRadius: "8px", background: "linear-gradient(135deg, var(--cyan), var(--purple))",
               display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", flexShrink: 0, color: "#fff",
             }}>◈</div>
-            <div style={{ flex: 1, fontSize: "12px", color: "rgba(255,255,255,0.7)", lineHeight: 1.6 }}>
+            <div style={{ flex: 1, fontSize: "12px", color: "rgba(255,255,255,0.7)", lineHeight: 1.6,
+              overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>
               {aiText}{aiTyping && <span style={{ color: "var(--cyan)", animation: "blink 0.7s infinite" }}>│</span>}
             </div>
           </div>
@@ -649,7 +1009,7 @@ function App() {
           }}>✕</button>
         </div>
         {/* Messages */}
-        <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: "8px", padding: "14px 18px" }}>
+        <div className="chat-messages" style={{ flex: 1, minHeight: 0, overflowY: "scroll", display: "flex", flexDirection: "column", gap: "8px", padding: "14px 18px" }}>
           {chatHistory.length === 0 && (
             <div style={{ textAlign: "center", padding: "20px", color: "var(--text-muted)", fontSize: "11px" }}>
               <div style={{ fontSize: "24px", marginBottom: "6px" }}>◈</div>
@@ -657,17 +1017,12 @@ function App() {
             </div>
           )}
           {chatHistory.map((msg, i) => (
-            <div key={i} style={{
-              padding: "8px 12px", borderRadius: "8px", fontSize: "11px", lineHeight: 1.5,
-              background: msg.role === "user" ? "rgba(0,229,255,0.08)" : "rgba(255,255,255,0.03)",
-              color: msg.role === "user" ? "var(--cyan)" : "rgba(255,255,255,0.7)",
-              alignSelf: msg.role === "user" ? "flex-end" : "flex-start", maxWidth: "85%",
-              whiteSpace: "pre-wrap",
-            }}>
-              {msg.text}
-            </div>
+            <MessageBubble key={i} role={msg.role} text={msg.text} />
           ))}
-          {chatLoading && (
+          {streamingText && (
+            <MessageBubble role="ai" text={streamingText} isStreaming />
+          )}
+          {chatLoading && !streamingText && (
             <div style={{ padding: "8px 12px", fontSize: "11px", color: "var(--cyan)", animation: "pulse 1s infinite" }}>
               ◈ Analyse en cours...
             </div>
@@ -675,18 +1030,31 @@ function App() {
           <div ref={chatEndRef} />
         </div>
         {/* Input */}
-        <div style={{ display: "flex", gap: "6px", padding: "12px 18px", borderTop: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", gap: "6px", padding: "12px 18px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
           <input
+            data-chat-input
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && sendChat()}
             placeholder="Parle à l'agent OUMNIA..."
             style={{
               flex: 1, padding: "8px 12px", borderRadius: "8px",
-              border: "1px solid var(--border)", background: "rgba(255,255,255,0.03)",
+              border: `1px solid ${voiceMode ? "rgba(0,230,118,0.4)" : "var(--border)"}`,
+              background: voiceMode ? "rgba(0,230,118,0.05)" : "rgba(255,255,255,0.03)",
               color: "#fff", fontSize: "11px", outline: "none", fontFamily: "var(--font-main)",
+              transition: "border-color 0.2s, background 0.2s",
             }}
           />
+          <button onClick={toggleVoice} style={{
+            padding: "8px 10px", borderRadius: "8px", border: "none",
+            background: voiceMode ? "rgba(0,230,118,0.2)" : "rgba(255,255,255,0.05)",
+            color: voiceMode ? "#00e676" : "var(--text-secondary)",
+            cursor: "pointer", fontSize: "14px", lineHeight: 1,
+            animation: voiceMode ? "pulse 1s infinite" : "none",
+            transition: "all 0.2s",
+          }} title={voiceMode ? "Désactiver la voix" : "Activer la voix"}>
+            {voiceMode ? "●" : "🎤"}
+          </button>
           <button onClick={sendChat} style={{
             padding: "8px 14px", borderRadius: "8px", border: "none",
             background: "linear-gradient(135deg, var(--cyan), var(--purple))",

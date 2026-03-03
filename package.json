@@ -13,11 +13,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "googleapis": "^144.0.0",
-    "electron-store": "^8.2.0",
     "auto-launch": "^5.0.6",
+    "better-sqlite3": "^12.6.2",
     "dotenv": "^16.4.7",
-    "node-fetch": "^3.3.2"
+    "electron-store": "^8.2.0",
+    "googleapis": "^144.0.0",
+    "node-fetch": "^3.3.2",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -38,10 +41,14 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "public/icon.png",
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "public/icon.png"
     }
   }
