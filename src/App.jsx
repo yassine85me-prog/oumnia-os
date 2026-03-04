@@ -433,6 +433,31 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
       }
     });
 
+    // Tool status notifications (visual only — TTS ignores these)
+    window.oumniaAPI.onStreamToolStatus((text) => {
+      streamingRef.current += text;
+      setStreamingText(streamingRef.current);
+      setGeneralState("coding");
+    });
+
+    // Agent routing notification (GENERAL → specialist)
+    window.oumniaAPI.onAgentRouted((data) => {
+      const { to } = data;
+      // Copy user message to target agent + show routing pill
+      setChatHistories((prev) => {
+        const fromMsgs = prev["general"] || [];
+        const lastUser = [...fromMsgs].reverse().find((m) => m.role === "user");
+        const targetMsgs = [...(prev[to] || [])];
+        if (lastUser) targetMsgs.push(lastUser);
+        targetMsgs.push({ role: "system", text: `routed:${to}` });
+        return { ...prev, [to]: targetMsgs };
+      });
+      setActiveAgent(to);
+      activeAgentRef.current = to;
+      streamingAgentRef.current = to;
+      setActiveNav("agent");
+    });
+
     // Tool confirmation requests
     window.oumniaAPI.onToolConfirmRequest((data) => {
       setToolConfirm(data);

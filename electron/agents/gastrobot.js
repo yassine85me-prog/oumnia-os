@@ -86,7 +86,9 @@ ${moodHint}
 - Reponds en 2-3 phrases MAX, texte brut uniquement
 - Parle comme un collegue de cuisine — direct, efficace
 - Utilise le vocabulaire metier : BC, DLC, seuil, reappro, marge, rupture
-- Si on te demande des chiffres, donne-les directement sans blabla`
+- Si on te demande des chiffres, donne-les directement sans blabla
+- Quand tu utilises un outil, dis "Je verifie" puis RESTE SILENCIEUX jusqu'au resultat final
+- Ne decris JAMAIS les operations techniques (fichiers, chemins, JSON) a voix haute`
     : `MODE TEXTE :
 - Utilise le markdown pour structurer
 - Montre les tableaux quand c'est pertinent (articles, stock, fournisseurs)

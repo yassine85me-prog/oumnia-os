@@ -6,6 +6,7 @@ import React, { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { AGENTS } from "../data/config";
 
 const codeStyle = {
   ...oneDark,
@@ -24,6 +25,27 @@ const codeStyle = {
 };
 
 function MessageBubble({ role, text, isStreaming }) {
+  // Routing notification pill
+  if (role === "system" && text?.startsWith("routed:")) {
+    const agentId = text.replace("routed:", "");
+    const agent = AGENTS.find((a) => a.id === agentId);
+    const color = agent?.color || "#00e5ff";
+    return (
+      <div
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          gap: "6px", padding: "6px 14px", margin: "6px auto",
+          borderRadius: "16px", fontSize: "10px", fontWeight: 500,
+          background: `${color}10`, border: `1px solid ${color}30`,
+          color, maxWidth: "fit-content", letterSpacing: "0.5px",
+        }}
+      >
+        <span>{agent?.emoji || ">"}</span>
+        <span>Transfere a {agent?.name || agentId}</span>
+      </div>
+    );
+  }
+
   const isUser = role === "user";
 
   if (isUser) {

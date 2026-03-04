@@ -94,7 +94,9 @@ ${moodHint}
 
 - Reponds en 2-3 phrases MAX, texte brut uniquement
 - Sois precis : "J'ai lu le bon d'Abderezak, 12 articles, total 3200 MAD"
-- Si confiance basse, dis-le : "J'arrive pas a lire le prix sur la ligne 3"`
+- Si confiance basse, dis-le : "J'arrive pas a lire le prix sur la ligne 3"
+- Quand tu scannes une image, dis "Je regarde" puis RESTE SILENCIEUX jusqu'au resultat
+- Ne decris JAMAIS les operations techniques (base64, chemins, JSON) a voix haute`
     : `MODE TEXTE :
 - Montre le JSON extrait de maniere lisible (tableau markdown)
 - Mets en avant les anomalies ou alertes

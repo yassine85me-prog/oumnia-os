@@ -25,6 +25,18 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
     ipcRenderer.on("stream-error", (_, error) => callback(error));
   },
 
+  // ═══ Tool Status (visual only, not spoken by TTS) ═══
+  onStreamToolStatus: (callback) => {
+    ipcRenderer.removeAllListeners("stream-tool-status");
+    ipcRenderer.on("stream-tool-status", (_, text) => callback(text));
+  },
+
+  // ═══ Agent Routing ═══
+  onAgentRouted: (callback) => {
+    ipcRenderer.removeAllListeners("agent-routed");
+    ipcRenderer.on("agent-routed", (_, data) => callback(data));
+  },
+
   // ═══ Google Sheets ═══
   loadProjects: () => ipcRenderer.invoke("sheets-load-projects"),
   updateProgress: (row, progress) =>

@@ -396,6 +396,18 @@ async function executeToolCall(name, input) {
         }
       }
 
+      case "save_content": {
+        const homeDir = require("os").homedir();
+        const category = input.category || "concept";
+        const contentDir = path.join(homeDir, "Oumnia-Content", category);
+        if (!fs.existsSync(contentDir)) fs.mkdirSync(contentDir, { recursive: true });
+        const datePrefix = new Date().toISOString().slice(0, 10);
+        const filename = `${datePrefix}-${input.filename}`;
+        const filePath = path.join(contentDir, filename);
+        fs.writeFileSync(filePath, input.content, "utf8");
+        return { success: true, path: filePath, message: `Contenu sauvegarde: ${filePath}` };
+      }
+
       case "read_gastroflow_script": {
         // GastroBot specialized tool
         const { GASTROFLOW_SCRIPT_PATH } = require("./agents/gastrobot");
@@ -678,6 +690,17 @@ async function handleChat(message, context, mainWindow, { voiceMode = false, age
     } catch {}
   };
 
+  // ═══ Intelligent Routing (GENERAL → specialist) ═══
+  const { routeMessage } = require("./agent-router");
+  const routing = await routeMessage(message, agentId);
+  if (routing.targetAgentId !== agentId) {
+    console.log(`[ROUTER] ${agentId} → ${routing.targetAgentId} (${routing.reason}, confidence: ${routing.confidence})`);
+    safeSend("agent-routed", { from: agentId, to: routing.targetAgentId, confidence: routing.confidence });
+    addToHistory("general", "user", message);
+    addToHistory("general", "assistant", `[→ ${getAgent(routing.targetAgentId).name}]`);
+    agentId = routing.targetAgentId;
+  }
+
   const agent = getAgent(agentId);
   console.log(`[AGENT] ${agent.name} processing message (voice=${voiceMode})`);
 
@@ -725,7 +748,7 @@ async function handleChat(message, context, mainWindow, { voiceMode = false, age
         console.log(`[${agent.name}] Tool: ${toolBlock.name}`);
         const toolNotif = `\n\n> ${formatToolNotification(toolBlock.name, toolBlock.input, "start")}\n`;
         fullText += toolNotif;
-        safeSend("stream-chunk", toolNotif);
+        safeSend("stream-tool-status", toolNotif);
 
         let result;
         if (DESTRUCTIVE_TOOLS.has(toolBlock.name)) {
@@ -743,17 +766,17 @@ async function handleChat(message, context, mainWindow, { voiceMode = false, age
             result = await executeToolCall(toolBlock.name, toolBlock.input);
             const doneNotif = `\n\n> ${formatToolNotification(toolBlock.name, toolBlock.input, "done")}\n`;
             fullText += doneNotif;
-            safeSend("stream-chunk", doneNotif);
+            safeSend("stream-tool-status", doneNotif);
           } else {
             result = { error: "Action refusee par l'utilisateur." };
             fullText += `\n\n> ❌ Action refusee par l'utilisateur.\n`;
-            safeSend("stream-chunk", `\n\n> ❌ Action refusee par l'utilisateur.\n`);
+            safeSend("stream-tool-status", `\n\n> ❌ Action refusee par l'utilisateur.\n`);
           }
         } else {
           result = await executeToolCall(toolBlock.name, toolBlock.input);
           const doneNotif = `\n\n> ${formatToolNotification(toolBlock.name, toolBlock.input, "done")}\n`;
           fullText += doneNotif;
-          safeSend("stream-chunk", doneNotif);
+          safeSend("stream-tool-status", doneNotif);
         }
 
         toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: JSON.stringify(result).substring(0, 10000) });
@@ -790,6 +813,7 @@ function formatToolNotification(name, input, phase) {
       case "run_command": return `⚡ Commande \`${input.command}\` — ⏳ En attente de validation...`;
       case "search_files": return `🔎 Recherche de "${input.query}" dans \`${path.basename(input.directory)}\`...`;
       case "delegate_to_claude_code": return `🤖 Delegation a Claude Code — ⏳ En attente de validation...`;
+      case "save_content": return `💾 Sauvegarde du contenu \`${input.filename}\`...`;
       case "read_gastroflow_script": return `📦 Lecture du script GastroFlow (section: ${input.section})...`;
       case "scan_image": return `👁️ Scan de \`${path.basename(input.image_path)}\`...`;
       case "analyze_bon": return `📋 Analyse du bon \`${path.basename(input.image_path)}\`...`;
@@ -803,6 +827,7 @@ function formatToolNotification(name, input, phase) {
       case "run_command": return `✅ Commande terminee : \`${input.command}\``;
       case "search_files": return `✅ Recherche terminee pour "${input.query}"`;
       case "delegate_to_claude_code": return `✅ Claude Code a termine sa tache`;
+      case "save_content": return `✅ Contenu sauvegarde : \`${input.filename}\``;
       case "read_gastroflow_script": return `✅ Script GastroFlow lu (section: ${input.section})`;
       case "scan_image": return `✅ Image scannee : \`${path.basename(input.image_path)}\``;
       case "analyze_bon": return `✅ Bon analyse : \`${path.basename(input.image_path)}\``;
