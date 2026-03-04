@@ -4,6 +4,8 @@
 // ═══════════════════════════════════════════
 
 const { getDb } = require("./database");
+const { execSync } = require("child_process");
+const path = require("path");
 
 const DEFAULT_PROJECTS = [
   {
@@ -111,10 +113,176 @@ function getProjectsForPrompt() {
   }).join("\n");
 }
 
+// ═══════════════════════════════════════════
+// Git-based Project Activity Analysis
+// ═══════════════════════════════════════════
+
+function gitCmd(cwd, cmd) {
+  try {
+    return execSync(cmd, { cwd, encoding: "utf8", stdio: "pipe", timeout: 5000 }).trim();
+  } catch { return ""; }
+}
+
+function analyzeProjectActivity(projectPath) {
+  const result = {
+    lastCommitDays: null,
+    commitsLastWeek: 0,
+    commitsLastMonth: 0,
+    totalCommits: 0,
+    linesChanged30d: 0,
+    activeBranches: 0,
+    momentum: "unknown", // rising, stable, declining, stalled
+    activityLevel: "unknown", // active, moderate, slow, stalled
+  };
+
+  // Check if it's a git repo
+  const branch = gitCmd(projectPath, "git branch --show-current");
+  if (!branch) return result;
+
+  // Last commit date
+  const lastCommitDate = gitCmd(projectPath, "git log -1 --format=%ci");
+  if (lastCommitDate) {
+    const lastDate = new Date(lastCommitDate);
+    result.lastCommitDays = Math.floor((Date.now() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  // Commits last 7 days
+  const weekLog = gitCmd(projectPath, "git rev-list --count --since='7 days ago' HEAD");
+  result.commitsLastWeek = parseInt(weekLog) || 0;
+
+  // Commits last 30 days
+  const monthLog = gitCmd(projectPath, "git rev-list --count --since='30 days ago' HEAD");
+  result.commitsLastMonth = parseInt(monthLog) || 0;
+
+  // Total commits
+  const totalLog = gitCmd(projectPath, "git rev-list --count HEAD");
+  result.totalCommits = parseInt(totalLog) || 0;
+
+  // Lines changed in last 30 days
+  const diffStat = gitCmd(projectPath, "git diff --shortstat HEAD~20 HEAD 2>/dev/null || echo '0'");
+  const insertions = (diffStat.match(/(\d+) insertion/) || [, "0"])[1];
+  const deletions = (diffStat.match(/(\d+) deletion/) || [, "0"])[1];
+  result.linesChanged30d = parseInt(insertions) + parseInt(deletions);
+
+  // Active branches
+  const branches = gitCmd(projectPath, "git branch --list");
+  result.activeBranches = branches ? branches.split("\n").length : 0;
+
+  // Momentum: compare last week vs previous week
+  const prevWeekLog = gitCmd(projectPath, "git rev-list --count --since='14 days ago' --until='7 days ago' HEAD");
+  const prevWeekCommits = parseInt(prevWeekLog) || 0;
+
+  if (result.commitsLastWeek > prevWeekCommits + 2) {
+    result.momentum = "rising";
+  } else if (result.commitsLastWeek >= prevWeekCommits - 1) {
+    result.momentum = "stable";
+  } else if (result.commitsLastWeek > 0) {
+    result.momentum = "declining";
+  } else {
+    result.momentum = "stalled";
+  }
+
+  // Activity level
+  if (result.lastCommitDays === null || result.lastCommitDays > 14) {
+    result.activityLevel = "stalled";
+  } else if (result.commitsLastWeek >= 5) {
+    result.activityLevel = "active";
+  } else if (result.commitsLastWeek >= 2) {
+    result.activityLevel = "moderate";
+  } else {
+    result.activityLevel = "slow";
+  }
+
+  return result;
+}
+
+function inferProgress(activity, currentProgress) {
+  // Don't downgrade progress — only increase based on momentum
+  if (!activity || activity.totalCommits === 0) return currentProgress;
+
+  let newProgress = currentProgress;
+
+  // Boost based on recent activity
+  if (activity.activityLevel === "active" && activity.momentum === "rising") {
+    newProgress = Math.min(currentProgress + 5, 95);
+  } else if (activity.activityLevel === "active") {
+    newProgress = Math.min(currentProgress + 2, 95);
+  }
+
+  return Math.max(newProgress, currentProgress); // Never decrease
+}
+
+function updateProjectFromScan(scanData) {
+  if (!scanData || !scanData.path) return;
+
+  const db = getDb();
+  const projectName = scanData.name || path.basename(scanData.path);
+
+  // Find matching project by name (case-insensitive) or path
+  const existing = db.prepare(
+    "SELECT * FROM projects WHERE LOWER(name) = LOWER(?) OR id = LOWER(?)"
+  ).get(projectName, projectName.toLowerCase().replace(/\s+/g, "-"));
+
+  if (!existing) return; // Unknown project, skip
+
+  const activity = analyzeProjectActivity(scanData.path);
+  const newProgress = inferProgress(activity, existing.progress);
+
+  // Build next_steps hint from recent commits
+  let nextSteps = existing.next_steps || "";
+  if (scanData.recentCommits && scanData.recentCommits.length > 0) {
+    const lastCommitMsg = scanData.recentCommits[0].message || "";
+    if (lastCommitMsg && !nextSteps) {
+      nextSteps = `Dernier commit: ${lastCommitMsg}`;
+    }
+  }
+
+  db.prepare(`
+    UPDATE projects SET
+      progress = ?,
+      last_activity = datetime('now','localtime'),
+      next_steps = COALESCE(?, next_steps),
+      updated_at = datetime('now','localtime')
+    WHERE id = ?
+  `).run(newProgress, nextSteps || null, existing.id);
+
+  return { ...existing, progress: newProgress, activity };
+}
+
+function updateAllProjectsFromScans(scansArray) {
+  const results = [];
+  for (const scan of scansArray) {
+    const result = updateProjectFromScan(scan);
+    if (result) results.push(result);
+  }
+  return results;
+}
+
+function getProjectsForPromptDetailed() {
+  const projects = getProjects().filter(p => p.status === "actif");
+  if (projects.length === 0) return "Aucun projet actif.";
+  return projects.map(p => {
+    let line = `- ${p.name} (${p.progress}%)`;
+    if (p.description) line += ` : ${p.description}`;
+    if (p.next_steps) line += ` | ${p.next_steps}`;
+    if (p.last_activity) {
+      const lastAct = new Date(p.last_activity);
+      const daysAgo = Math.floor((Date.now() - lastAct.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysAgo > 7) line += ` ⚠️ STAGNANT (${daysAgo}j sans activite)`;
+      else if (daysAgo <= 1) line += ` 🔥 Actif aujourd'hui`;
+    }
+    return line;
+  }).join("\n");
+}
+
 module.exports = {
   initDefaultProjects,
   getProjects,
   getProject,
   upsertProject,
   getProjectsForPrompt,
+  getProjectsForPromptDetailed,
+  analyzeProjectActivity,
+  updateProjectFromScan,
+  updateAllProjectsFromScans,
 };

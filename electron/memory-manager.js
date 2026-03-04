@@ -48,8 +48,21 @@ function addConversation(summary) {
 
 function addFact(fact, category = "general", importance = 5) {
   const db = getDb();
+  // Check if fact already exists (exact match)
+  const existing = db.prepare("SELECT id, importance FROM memories WHERE content = ?").get(fact);
+  if (existing) {
+    // Bump importance if new importance is higher, and track access
+    if (importance > existing.importance) {
+      db.prepare("UPDATE memories SET importance = ?, last_accessed = datetime('now','localtime'), access_count = access_count + 1 WHERE id = ?")
+        .run(importance, existing.id);
+    } else {
+      db.prepare("UPDATE memories SET last_accessed = datetime('now','localtime'), access_count = access_count + 1 WHERE id = ?")
+        .run(existing.id);
+    }
+    return;
+  }
   db.prepare(`
-    INSERT OR IGNORE INTO memories (content, category, importance, source_session_id)
+    INSERT INTO memories (content, category, importance, source_session_id)
     VALUES (?, ?, ?, ?)
   `).run(fact, category, importance, SESSION_ID);
 }
@@ -159,6 +172,142 @@ function saveMemory(data) {
   tx();
 }
 
+function saveSessionSummary(sessionId, summary, topics, decisions, messageCount) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO session_summaries (session_id, summary, topics, decisions, message_count)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      summary = excluded.summary,
+      topics = excluded.topics,
+      decisions = excluded.decisions,
+      message_count = excluded.message_count
+  `).run(sessionId, summary, topics || "", decisions || "", messageCount);
+}
+
+function getRecentSummaries(limit = 5) {
+  const db = getDb();
+  return db.prepare(
+    "SELECT summary, topics, decisions, message_count, created_at FROM session_summaries ORDER BY created_at DESC LIMIT ?"
+  ).all(limit);
+}
+
+// ── Daily Journal ──
+
+function getTodayDate() {
+  return new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+}
+
+function saveDailyJournal(date, summary, highlights, mood, productivityScore, sessionsCount, topics) {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO daily_journal (date, summary, highlights, mood, productivity_score, sessions_count, topics)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET
+      summary = excluded.summary,
+      highlights = excluded.highlights,
+      mood = excluded.mood,
+      productivity_score = excluded.productivity_score,
+      sessions_count = excluded.sessions_count,
+      topics = excluded.topics
+  `).run(date, summary, highlights || "", mood || "neutre", productivityScore || 5, sessionsCount || 0, topics || "");
+}
+
+function getTodayJournal() {
+  const db = getDb();
+  return db.prepare("SELECT * FROM daily_journal WHERE date = ?").get(getTodayDate());
+}
+
+function getRecentJournals(limit = 7) {
+  const db = getDb();
+  return db.prepare(
+    "SELECT date, summary, highlights, mood, productivity_score, sessions_count, topics FROM daily_journal ORDER BY date DESC LIMIT ?"
+  ).all(limit);
+}
+
+async function generateDailyDigest() {
+  const db = getDb();
+  const today = getTodayDate();
+
+  // Get all session summaries from today
+  const todaySummaries = db.prepare(
+    "SELECT summary, topics, decisions, message_count FROM session_summaries WHERE date(created_at) = ?"
+  ).all(today);
+
+  if (todaySummaries.length === 0) return;
+
+  // Get today's conversations count
+  const convCount = db.prepare(
+    "SELECT COUNT(*) as c FROM conversations WHERE date(timestamp) = ?"
+  ).get(today)?.c || 0;
+
+  // Get new facts learned today
+  const newFacts = db.prepare(
+    "SELECT content FROM memories WHERE date(created_at) = ? ORDER BY importance DESC LIMIT 5"
+  ).all(today);
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return;
+
+  try {
+    const Anthropic = require("@anthropic-ai/sdk");
+    const client = new Anthropic({ apiKey });
+
+    const sessionsDigest = todaySummaries.map((s, i) =>
+      `Session ${i + 1}: ${s.summary} [Sujets: ${s.topics || "N/A"}] [Decisions: ${s.decisions || "N/A"}]`
+    ).join("\n");
+
+    const factsDigest = newFacts.length > 0
+      ? `Faits appris: ${newFacts.map(f => f.content).join("; ")}`
+      : "";
+
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 500,
+      system: `Tu es un archiviste personnel. Genere un journal quotidien concis a partir des sessions de la journee.
+Reponds en JSON sans markdown :
+{
+  "summary": "Resume de la journee en 2-3 phrases",
+  "highlights": "Les 2-3 moments cles ou avancees majeures",
+  "mood": "un mot: productif/creatif/frustre/detendu/intense/neutre",
+  "productivity_score": 1-10,
+  "topics": "sujet1, sujet2, sujet3"
+}`,
+      messages: [{
+        role: "user",
+        content: `JOURNEE DU ${today}\n${convCount} interactions, ${todaySummaries.length} sessions\n\nSESSIONS:\n${sessionsDigest}\n\n${factsDigest}`
+      }],
+    });
+
+    const text = response.content[0]?.text?.trim();
+    if (!text) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) parsed = JSON.parse(match[0]);
+      else return;
+    }
+
+    if (parsed.summary) {
+      saveDailyJournal(
+        today,
+        parsed.summary,
+        parsed.highlights || "",
+        parsed.mood || "neutre",
+        parsed.productivity_score || 5,
+        todaySummaries.length,
+        parsed.topics || ""
+      );
+      console.log(`[DAILY-JOURNAL] Saved: ${parsed.summary.substring(0, 80)}...`);
+    }
+  } catch (err) {
+    console.error("[DAILY-JOURNAL] Error:", err.message);
+  }
+}
+
 module.exports = {
   addConversation,
   addFact,
@@ -168,5 +317,11 @@ module.exports = {
   saveMemory,
   getStat,
   setStat,
+  saveSessionSummary,
+  getRecentSummaries,
+  saveDailyJournal,
+  getTodayJournal,
+  getRecentJournals,
+  generateDailyDigest,
   SESSION_ID,
 };

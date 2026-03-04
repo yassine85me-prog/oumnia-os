@@ -2,6 +2,7 @@
 // ═══════════════════════════════════════════
 // OUMNIA OS — Native macOS Speech Recognition
 // Uses SFSpeechRecognizer (Apple on-device STT)
+// Supports: fr-FR, ar-SA, en-US (switchable via stdin)
 // Outputs JSON lines to stdout, reads commands from stdin
 // ═══════════════════════════════════════════
 
@@ -10,15 +11,16 @@ import AVFoundation
 import Foundation
 
 class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
-    let recognizer: SFSpeechRecognizer
+    var recognizer: SFSpeechRecognizer
+    var currentLocale: String = "fr-FR"
     let audioEngine = AVAudioEngine()
     var recognitionTask: SFSpeechRecognitionTask?
     var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     var silenceTimer: Timer?
     var restartTimer: Timer?
     var lastTranscript = ""
-    var isActive = false  // True when we're supposed to be listening
-    var isTransitioning = false  // True during start/stop transitions
+    var isActive = false
+    var isTransitioning = false
 
     override init() {
         recognizer = SFSpeechRecognizer(locale: Locale(identifier: "fr-FR"))!
@@ -50,13 +52,36 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
         }
     }
 
+    // ═══ LANGUAGE SWITCH ═══
+    func switchLanguage(_ locale: String) {
+        let wasActive = isActive
+        if wasActive {
+            stopListening()
+        }
+
+        guard let newRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale)) else {
+            output(["error": "unsupported_locale", "locale": locale])
+            return
+        }
+
+        currentLocale = locale
+        recognizer = newRecognizer
+        recognizer.delegate = self
+
+        output(["status": "language_changed", "locale": locale])
+
+        if wasActive {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.startListening()
+            }
+        }
+    }
+
     func startListening() {
-        // Prevent re-entrance during transitions
         if isTransitioning {
             output(["debug": "skipped_start_transitioning"])
             return
         }
-        // Don't restart if already active
         if recognitionTask != nil {
             output(["debug": "skipped_start_already_active"])
             return
@@ -65,9 +90,6 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
         isTransitioning = true
         isActive = true
 
-        output(["debug": "start_begin"])
-
-        // Clean up without triggering restart
         cleanupAudio()
 
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
@@ -79,20 +101,17 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
 
         request.shouldReportPartialResults = true
 
-        // Check on-device support and use it if available
         if #available(macOS 13, *) {
             if recognizer.supportsOnDeviceRecognition {
                 request.requiresOnDeviceRecognition = true
-                output(["debug": "using_on_device"])
+                output(["debug": "using_on_device", "locale": currentLocale])
             } else {
-                output(["debug": "on_device_not_supported_using_network"])
+                output(["debug": "using_network", "locale": currentLocale])
             }
         }
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        output(["debug": "audio_format", "sampleRate": recordingFormat.sampleRate, "channels": Int(recordingFormat.channelCount)])
 
         audioEngine.prepare()
 
@@ -110,7 +129,7 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
             return
         }
 
-        output(["status": "listening"])
+        output(["status": "listening", "locale": currentLocale])
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self = self else { return }
@@ -119,25 +138,23 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
                 let text = result.bestTranscription.formattedString
                 let isFinal = result.isFinal
 
-                // Reset silence timer
                 self.silenceTimer?.invalidate()
                 self.silenceTimer = nil
 
                 self.output([
                     "text": text,
-                    "final": isFinal
+                    "final": isFinal,
+                    "locale": self.currentLocale
                 ])
 
                 if isFinal {
                     self.lastTranscript = ""
-                    // Schedule restart for continuous listening
                     self.scheduleRestart(delay: 1.0)
                 } else {
                     self.lastTranscript = text
-                    // Auto-finalize after 4s of silence (longer = fewer mid-phrase cuts)
                     self.silenceTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { _ in
                         if !text.isEmpty {
-                            self.output(["text": text, "final": true, "auto_final": true])
+                            self.output(["text": text, "final": true, "auto_final": true, "locale": self.currentLocale])
                             self.lastTranscript = ""
                             self.scheduleRestart(delay: 1.0)
                         }
@@ -149,33 +166,25 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
                 let code = error.code
                 let domain = error.domain
 
-                // Log ALL errors for diagnosis
                 self.output(["debug": "recognition_error", "code": code, "domain": domain, "message": error.localizedDescription])
 
-                // Don't restart if we've been told to stop
                 guard self.isActive else { return }
 
                 if code == 216 || code == 1110 {
-                    // Normal timeout / no speech — restart after delay
                     self.scheduleRestart(delay: 2.0)
                 } else if code == 301 || code == 209 {
-                    // 301 = recognition cancelled (by us), 209 = retry
-                    // Don't restart — we cancelled it intentionally
                     return
                 } else {
-                    // Unknown error — longer delay
                     self.output(["error": "recognition_error", "code": code, "message": error.localizedDescription])
                     self.scheduleRestart(delay: 5.0)
                 }
             }
         }
 
-        output(["debug": "task_created"])
         isTransitioning = false
     }
 
     func scheduleRestart(delay: Double) {
-        // Cancel any pending restart
         restartTimer?.invalidate()
         restartTimer = nil
 
@@ -185,10 +194,8 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
             guard let self = self else { return }
             self.restartTimer = nil
             guard self.isActive else { return }
-            self.output(["debug": "scheduled_restart"])
             self.cleanupAudio()
             self.recognitionTask = nil
-            // Small delay to let cleanup complete
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 if self.isActive {
                     self.startListening()
@@ -220,9 +227,7 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
 
     func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
         output(["status": available ? "available" : "unavailable"])
-        // Only auto-start if we should be active but have no task
         if available && isActive && recognitionTask == nil && !isTransitioning {
-            output(["debug": "availability_triggered_start"])
             startListening()
         }
     }
@@ -231,17 +236,16 @@ class SpeechEngine: NSObject, SFSpeechRecognizerDelegate {
 // ═══ MAIN ═══
 let engine = SpeechEngine()
 
-// Log capabilities
 if #available(macOS 13, *) {
     engine.output(["debug": "on_device_supported", "value": engine.recognizer.supportsOnDeviceRecognition])
 }
 engine.output(["debug": "recognizer_available", "value": engine.recognizer.isAvailable])
+engine.output(["debug": "supported_locales", "locales": "fr-FR,ar-SA,en-US"])
 
 engine.requestPermissions { granted in
     if granted {
         engine.output(["status": "ready"])
         DispatchQueue.main.async {
-            // Only start if not already started by availabilityDidChange
             if engine.recognitionTask == nil && !engine.isTransitioning {
                 engine.startListening()
             }
@@ -251,24 +255,30 @@ engine.requestPermissions { granted in
     }
 }
 
-// Read stdin for commands (stop, start, quit)
+// Read stdin for commands
 DispatchQueue.global().async {
     while let line = readLine() {
-        let cmd = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cmd = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmdLower = cmd.lowercased()
         DispatchQueue.main.async {
-            switch cmd {
-            case "stop":
-                engine.stopListening()
-                engine.output(["status": "stopped"])
-            case "start":
-                if engine.recognitionTask == nil {
-                    engine.startListening()
+            if cmdLower.hasPrefix("lang:") {
+                let locale = String(cmd.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                engine.switchLanguage(locale)
+            } else {
+                switch cmdLower {
+                case "stop":
+                    engine.stopListening()
+                    engine.output(["status": "stopped"])
+                case "start":
+                    if engine.recognitionTask == nil {
+                        engine.startListening()
+                    }
+                case "quit":
+                    engine.stopListening()
+                    exit(0)
+                default:
+                    break
                 }
-            case "quit":
-                engine.stopListening()
-                exit(0)
-            default:
-                break
             }
         }
     }

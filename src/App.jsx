@@ -17,6 +17,24 @@ import TerminalView from "./views/TerminalView";
 // Check if running in Electron
 const isElectron = typeof window !== "undefined" && window.oumniaAPI;
 
+// ═══ Language Detection ═══
+const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
+const LANG_MAP = { "fr-FR": "fr-FR", "ar-SA": "ar-SA", "en-US": "en-US" };
+
+function detectLanguage(text) {
+  if (!text) return "fr-FR";
+  // If >30% Arabic characters, it's Arabic
+  const arabicChars = (text.match(ARABIC_RE) || []).length;
+  if (arabicChars > text.length * 0.3) return "ar-SA";
+  // English heuristic: common English words that are NOT French
+  const englishWords = /\b(the|is|are|was|were|have|has|this|that|with|from|they|would|could|should|about|what|when|where|which|their|there|been|being|will|your|can|how|its|you|for|not|but|had|her|him|his|she|some|than|them|then|into|very|just|also|more|like|here|know|want|make|does|did|get|got|let|say|need|help|try|use|work|look|take|give|think|come|find|tell)\b/gi;
+  const engMatches = (text.match(englishWords) || []).length;
+  const words = text.split(/\s+/).length;
+  if (words >= 3 && engMatches >= words * 0.3) return "en-US";
+  // Default: French
+  return "fr-FR";
+}
+
 function App() {
   // ═══ State ═══
   const [time, setTime] = useState(new Date());
@@ -26,7 +44,8 @@ function App() {
   const [aiText, setAiText] = useState("");
   const [aiTyping, setAiTyping] = useState(true);
   const [chatInput, setChatInput] = useState("");
-  const [chatHistory, setChatHistory] = useState([]);
+  const [activeAgent, setActiveAgent] = useState("general");
+  const [chatHistories, setChatHistories] = useState({});
   const [chatLoading, setChatLoading] = useState(false);
   const [xp, setXp] = useState(0);
   const [level, setLevel] = useState(1);
@@ -47,6 +66,10 @@ function App() {
   const projectsRef = useRef(projects);
   const [deepScanResults, setDeepScanResults] = useState([]);
   const [terminalCwd, setTerminalCwd] = useState(null);
+  const [toolConfirm, setToolConfirm] = useState(null); // { requestId, toolName, input, preview }
+  const detectedLangRef = useRef("fr-FR");
+  const activeAgentRef = useRef("general");
+  const streamingAgentRef = useRef("general");
 
   const handleOpenTerminal = useCallback((projectPath) => {
     setTerminalCwd(projectPath);
@@ -58,6 +81,20 @@ function App() {
   // Keep refs in sync
   useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
+  useEffect(() => { activeAgentRef.current = activeAgent; }, [activeAgent]);
+
+  const chatHistory = useMemo(() => chatHistories[activeAgent] || [], [chatHistories, activeAgent]);
+
+  const pushToHistory = useCallback((agentId, msg) => {
+    setChatHistories(prev => ({
+      ...prev,
+      [agentId]: [...(prev[agentId] || []), msg],
+    }));
+  }, []);
+
+  const handleSwitchAgent = useCallback((agentId) => {
+    setActiveAgent(agentId);
+  }, []);
 
   // ═══ Greeting (fallback) ═══
   const fullGreeting = (() => {
@@ -89,8 +126,15 @@ function App() {
     voiceOutputRef.current?.stop();
     sentenceQueueRef.current = [];
 
+    // Detect language from user input
+    const lang = detectLanguage(text);
+    detectedLangRef.current = lang;
+    // Switch TTS voice to match
+    voiceOutputRef.current?.setLanguage(lang);
+
     setChatInput("");
-    setChatHistory((prev) => [...prev, { role: "user", text }]);
+    streamingAgentRef.current = activeAgentRef.current;
+    pushToHistory(activeAgentRef.current, { role: "user", text });
     setChatLoading(true);
     setGeneralState("thinking");
     streamingRef.current = "";
@@ -105,7 +149,7 @@ function App() {
       const projectContext = projectsRef.current
         .map((p) => `- ${p.name}: ${p.status} (${p.progress}%) — ${p.desc}`)
         .join("\n");
-      window.oumniaAPI.chatStream(text, projectContext, true);
+      window.oumniaAPI.chatStream(text, projectContext, true, activeAgentRef.current);
     }
   }, []);
 
@@ -309,7 +353,7 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
     window.oumniaAPI.onStreamEnd((fullText) => {
       const finalText = fullText || streamingRef.current || "";
       if (finalText.trim()) {
-        setChatHistory((prev) => [...prev, { role: "ai", text: finalText }]);
+        pushToHistory(streamingAgentRef.current, { role: "ai", text: finalText });
       }
       setStreamingText("");
       streamingRef.current = "";
@@ -323,6 +367,16 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
         sentenceQueueRef.current = [];
 
         setGeneralState("speaking");
+
+        // Detect response language and switch STT to match for next input
+        const responseLang = detectLanguage(finalText);
+        if (isElectron && responseLang !== detectedLangRef.current) {
+          // If GENERAL responded in a different language, follow user's language
+        }
+        // Switch STT to user's language for next listening cycle
+        if (isElectron) {
+          window.oumniaAPI.setSpeechLanguage(detectedLangRef.current);
+        }
 
         // Wait for ALL speech to finish BEFORE starting mic
         const onAllSpeechDone = () => {
@@ -366,10 +420,7 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
     });
 
     window.oumniaAPI.onStreamError((error) => {
-      setChatHistory((prev) => [
-        ...prev,
-        { role: "ai", text: `Erreur : ${error}` },
-      ]);
+      pushToHistory(streamingAgentRef.current, { role: "ai", text: `Erreur : ${error}` });
       setStreamingText("");
       streamingRef.current = "";
       setChatLoading(false);
@@ -380,6 +431,11 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
       } else {
         setGeneralState("idle");
       }
+    });
+
+    // Tool confirmation requests
+    window.oumniaAPI.onToolConfirmRequest((data) => {
+      setToolConfirm(data);
     });
   }, [processSpeechQueue]);
 
@@ -415,7 +471,7 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
     voiceIn.onError = (error) => {
       console.warn("[VOICE] Input error:", error);
       if (error === "not-allowed") {
-        setChatHistory(prev => [...prev, { role: "ai", text: "\u26a0\ufe0f Acc\u00e8s au micro refus\u00e9. V\u00e9rifie les permissions." }]);
+        pushToHistory(activeAgentRef.current, { role: "ai", text: "\u26a0\ufe0f Acc\u00e8s au micro refus\u00e9. V\u00e9rifie les permissions." });
         setVoiceMode(false);
         setGeneralState("idle");
       }
@@ -459,8 +515,15 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
   const sendChat = useCallback(() => {
     if (!chatInput.trim() || chatLoading) return;
     const msg = chatInput.trim();
+
+    // Detect language for TTS
+    const lang = detectLanguage(msg);
+    detectedLangRef.current = lang;
+    voiceOutputRef.current?.setLanguage(lang);
+
     setChatInput("");
-    setChatHistory((prev) => [...prev, { role: "user", text: msg }]);
+    streamingAgentRef.current = activeAgentRef.current;
+    pushToHistory(activeAgentRef.current, { role: "user", text: msg });
     setChatLoading(true);
     setGeneralState("thinking");
     streamingRef.current = "";
@@ -472,14 +535,11 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
       const projectContext = projects
         .map((p) => `- ${p.name}: ${p.status} (${p.progress}%) — ${p.desc}`)
         .join("\n");
-      window.oumniaAPI.chatStream(msg, projectContext, voiceMode);
+      window.oumniaAPI.chatStream(msg, projectContext, voiceMode, activeAgentRef.current);
     } else {
       // Fallback when not in Electron
       setTimeout(() => {
-        setChatHistory((prev) => [
-          ...prev,
-          { role: "ai", text: "Mode demo — connecte l'API Claude via le fichier .env pour activer l'agent AI." },
-        ]);
+        pushToHistory(activeAgentRef.current, { role: "ai", text: "Mode demo — connecte l'API Claude via le fichier .env pour activer l'agent AI." });
         setChatLoading(false);
         setGeneralState("idle");
       }, 1000);
@@ -511,6 +571,14 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
       voiceInputRef.current?.start();
     }
   }, [voiceMode]);
+
+  const handleToolConfirmResponse = useCallback((approved) => {
+    if (!toolConfirm) return;
+    if (isElectron) {
+      window.oumniaAPI.toolConfirmResponse(toolConfirm.requestId, approved);
+    }
+    setToolConfirm(null);
+  }, [toolConfirm]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -733,6 +801,7 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
                     if (generalState === "repos") handleWakeCommand();
                     else setActiveNav("agent");
                   }}
+                  onSwitchAgent={(id) => { handleSwitchAgent(id); setActiveNav("agent"); }}
                 />
               );
             case "agent":
@@ -749,6 +818,8 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
                   onSend={sendChat}
                   onToggleVoice={toggleVoice}
                   chatEndRef={chatEndRef}
+                  activeAgent={activeAgent}
+                  onSwitchAgent={handleSwitchAgent}
                 />
               );
             case "projects":
@@ -760,6 +831,115 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
           }
         })()}
       </div>
+
+      {/* ═══ TOOL CONFIRMATION MODAL ═══ */}
+      {toolConfirm && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 9999,
+          background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div style={{
+            background: "rgba(12,12,30,0.98)", border: "1px solid rgba(0,229,255,0.3)",
+            borderRadius: "16px", padding: "28px", maxWidth: "520px", width: "90%",
+            boxShadow: "0 0 40px rgba(0,229,255,0.15), 0 20px 60px rgba(0,0,0,0.5)",
+          }}>
+            <div style={{
+              fontSize: "14px", fontWeight: "700", color: "var(--cyan)",
+              fontFamily: "var(--font-display)", letterSpacing: "1px", marginBottom: "16px",
+              display: "flex", alignItems: "center", gap: "8px",
+            }}>
+              {toolConfirm.toolName === "write_file" ? "✏️" : toolConfirm.toolName === "delegate_to_claude_code" ? "🤖" : "⚡"}
+              {toolConfirm.toolName === "write_file" ? " ECRITURE DE FICHIER" : toolConfirm.toolName === "delegate_to_claude_code" ? " DELEGATION A CLAUDE CODE" : " EXECUTION DE COMMANDE"}
+            </div>
+
+            <div style={{
+              background: "rgba(0,0,0,0.4)", borderRadius: "8px", padding: "14px",
+              border: "1px solid rgba(255,255,255,0.06)", marginBottom: "16px",
+            }}>
+              {toolConfirm.toolName === "write_file" ? (
+                <>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>FICHIER</div>
+                  <div style={{ fontSize: "13px", color: "#fff", fontFamily: "var(--font-mono)", marginBottom: "12px", wordBreak: "break-all" }}>
+                    {toolConfirm.input?.path}
+                  </div>
+                  {toolConfirm.preview && (
+                    <>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>APERCU DU CONTENU</div>
+                      <pre style={{
+                        fontSize: "11px", color: "rgba(255,255,255,0.7)", fontFamily: "var(--font-mono)",
+                        whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: "200px", overflow: "auto",
+                        margin: 0, lineHeight: "1.5",
+                      }}>
+                        {toolConfirm.preview}{toolConfirm.preview.length >= 500 ? "\n..." : ""}
+                      </pre>
+                    </>
+                  )}
+                </>
+              ) : toolConfirm.toolName === "delegate_to_claude_code" ? (
+                <>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>INSTRUCTION POUR CLAUDE CODE</div>
+                  <pre style={{
+                    fontSize: "12px", color: "#fff", fontFamily: "var(--font-mono)",
+                    whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: "250px", overflow: "auto",
+                    margin: 0, lineHeight: "1.5", marginBottom: "12px",
+                  }}>
+                    {toolConfirm.input?.instruction}
+                  </pre>
+                  {toolConfirm.input?.cwd && (
+                    <>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>PROJET</div>
+                      <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)", fontFamily: "var(--font-mono)" }}>
+                        {toolConfirm.input.cwd}
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>COMMANDE</div>
+                  <div style={{ fontSize: "13px", color: "#fff", fontFamily: "var(--font-mono)", marginBottom: "8px" }}>
+                    {toolConfirm.input?.command}
+                  </div>
+                  {toolConfirm.input?.cwd && (
+                    <>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>REPERTOIRE</div>
+                      <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)", fontFamily: "var(--font-mono)" }}>
+                        {toolConfirm.input.cwd}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => handleToolConfirmResponse(false)}
+                style={{
+                  padding: "10px 24px", borderRadius: "8px", fontSize: "12px", fontWeight: "600",
+                  border: "1px solid rgba(255,82,82,0.3)", background: "rgba(255,82,82,0.1)",
+                  color: "#ff5252", cursor: "pointer", fontFamily: "var(--font-main)",
+                  transition: "all 0.2s",
+                }}
+              >
+                Refuser
+              </button>
+              <button
+                onClick={() => handleToolConfirmResponse(true)}
+                style={{
+                  padding: "10px 24px", borderRadius: "8px", fontSize: "12px", fontWeight: "600",
+                  border: "1px solid rgba(0,229,255,0.3)", background: "rgba(0,229,255,0.15)",
+                  color: "var(--cyan)", cursor: "pointer", fontFamily: "var(--font-main)",
+                  transition: "all 0.2s",
+                }}
+              >
+                Accepter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

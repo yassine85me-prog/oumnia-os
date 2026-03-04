@@ -75,6 +75,30 @@ function initTables() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
 
+    CREATE TABLE IF NOT EXISTS session_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL UNIQUE,
+      summary TEXT NOT NULL,
+      topics TEXT,
+      decisions TEXT,
+      message_count INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_journal (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      summary TEXT NOT NULL,
+      highlights TEXT,
+      mood TEXT DEFAULT 'neutre',
+      productivity_score INTEGER DEFAULT 5 CHECK(productivity_score BETWEEN 1 AND 10),
+      sessions_count INTEGER DEFAULT 0,
+      topics TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_summaries_date
+      ON session_summaries(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_conversations_session
       ON conversations(session_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_timestamp
@@ -83,6 +107,8 @@ function initTables() {
       ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_importance
       ON memories(importance DESC);
+    CREATE INDEX IF NOT EXISTS idx_daily_journal_date
+      ON daily_journal(date DESC);
   `);
 }
 

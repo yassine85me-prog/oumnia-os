@@ -1,30 +1,58 @@
+import { useMemo } from "react";
 import GeneralHologram from "../components/GeneralHologram";
 import MessageBubble from "../components/MessageBubble";
+import { AGENTS } from "../data/config";
 import { STATE_COLORS, STATE_LABELS } from "../utils/ui-constants";
 
 export default function AgentView({
   chatHistory, chatInput, chatLoading, streamingText,
   voiceMode, generalState, audioLevel,
   onInputChange, onSend, onToggleVoice, chatEndRef,
+  activeAgent, onSwitchAgent,
 }) {
   const stateColor = STATE_COLORS[generalState] || "var(--green)";
   const stateLabel = STATE_LABELS[generalState] || "READY";
 
+  const activeAgents = useMemo(() => AGENTS.filter(a => a.status === "active"), []);
+  const currentAgent = useMemo(() => AGENTS.find(a => a.id === activeAgent) || AGENTS[0], [activeAgent]);
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-      {/* Header with hologram */}
+      {/* Header with hologram + agent tabs */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center", gap: "24px",
         padding: "16px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0,
-        background: "rgba(6,6,16,0.4)",
+        background: "rgba(6,6,16,0.4)", position: "relative",
       }}>
+        {/* Agent tabs — positioned left */}
+        <div style={{ position: "absolute", left: "24px", display: "flex", gap: "4px" }}>
+          {activeAgents.map((agent) => (
+            <button
+              key={agent.id}
+              onClick={() => onSwitchAgent(agent.id)}
+              style={{
+                padding: "6px 14px", borderRadius: "8px", border: "1px solid",
+                borderColor: activeAgent === agent.id ? agent.color + "60" : "rgba(255,255,255,0.06)",
+                background: activeAgent === agent.id ? agent.color + "15" : "rgba(255,255,255,0.02)",
+                color: activeAgent === agent.id ? agent.color : "var(--text-muted)",
+                fontSize: "11px", fontWeight: "600", cursor: "pointer",
+                fontFamily: "var(--font-main)", transition: "all 0.2s",
+                display: "flex", alignItems: "center", gap: "6px",
+              }}
+            >
+              <span style={{ fontSize: "14px" }}>{agent.emoji}</span>
+              {agent.name}
+            </button>
+          ))}
+        </div>
+
         <GeneralHologram state={generalState} audioLevel={audioLevel} size={100} />
         <div>
           <div style={{
-            fontSize: "10px", fontFamily: "var(--font-display)", color: "rgba(0,229,255,0.4)",
+            fontSize: "10px", fontFamily: "var(--font-display)", color: currentAgent.color + "99",
             letterSpacing: "4px", marginBottom: "4px",
-          }}>G.E.N.E.R.A.L</div>
+          }}>{currentAgent.name.toUpperCase()}</div>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <div style={{
               width: "6px", height: "6px", borderRadius: "50%", background: stateColor,
@@ -45,8 +73,10 @@ export default function AgentView({
       }}>
         {chatHistory.length === 0 && (
           <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-muted)", fontSize: "12px" }}>
-            <div style={{ fontSize: "32px", marginBottom: "12px", opacity: 0.3 }}>◈</div>
-            Demande-moi n'importe quoi sur tes projets...
+            <div style={{ fontSize: "32px", marginBottom: "12px", opacity: 0.3 }}>{currentAgent.emoji}</div>
+            {activeAgent === "gastrobot"
+              ? "Demande-moi sur le stock, les fournisseurs, les commandes..."
+              : "Demande-moi n'importe quoi sur tes projets..."}
           </div>
         )}
         {chatHistory.map((msg, i) => (
@@ -56,8 +86,8 @@ export default function AgentView({
           <MessageBubble role="ai" text={streamingText} isStreaming />
         )}
         {chatLoading && !streamingText && (
-          <div style={{ padding: "10px 14px", fontSize: "12px", color: "var(--cyan)", animation: "pulse 1s infinite" }}>
-            ◈ Analyse en cours...
+          <div style={{ padding: "10px 14px", fontSize: "12px", color: currentAgent.color, animation: "pulse 1s infinite" }}>
+            ◈ {currentAgent.name} analyse...
           </div>
         )}
         <div ref={chatEndRef} />
@@ -74,19 +104,19 @@ export default function AgentView({
           value={chatInput}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && onSend()}
-          placeholder="Parle a GENERAL..."
+          placeholder={activeAgent === "gastrobot" ? "Parle a GastroBot..." : "Parle a GENERAL..."}
           style={{
             flex: 1, padding: "10px 14px", borderRadius: "10px",
-            border: `1px solid ${voiceMode ? "rgba(0,230,118,0.4)" : "var(--border)"}`,
-            background: voiceMode ? "rgba(0,230,118,0.05)" : "rgba(255,255,255,0.03)",
+            border: `1px solid ${voiceMode ? currentAgent.color + "66" : "var(--border)"}`,
+            background: voiceMode ? currentAgent.color + "0D" : "rgba(255,255,255,0.03)",
             color: "#fff", fontSize: "12px", outline: "none", fontFamily: "var(--font-main)",
             transition: "border-color 0.2s, background 0.2s",
           }}
         />
         <button onClick={onToggleVoice} style={{
           padding: "10px 12px", borderRadius: "10px", border: "none",
-          background: voiceMode ? "rgba(0,230,118,0.2)" : "rgba(255,255,255,0.05)",
-          color: voiceMode ? "#00e676" : "var(--text-secondary)",
+          background: voiceMode ? currentAgent.color + "33" : "rgba(255,255,255,0.05)",
+          color: voiceMode ? currentAgent.color : "var(--text-secondary)",
           cursor: "pointer", fontSize: "16px", lineHeight: 1,
           animation: voiceMode ? "pulse 1s infinite" : "none",
           transition: "all 0.2s",

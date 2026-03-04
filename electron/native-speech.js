@@ -16,7 +16,14 @@ let onStatusCb = null;
 let onErrorCb = null;
 
 function ensureCompiled() {
-  if (fs.existsSync(HELPER_PATH)) return true;
+  // Recompile if binary missing OR source is newer than binary
+  let needsCompile = !fs.existsSync(HELPER_PATH);
+  if (!needsCompile && fs.existsSync(SOURCE_PATH)) {
+    const srcTime = fs.statSync(SOURCE_PATH).mtimeMs;
+    const binTime = fs.statSync(HELPER_PATH).mtimeMs;
+    if (srcTime > binTime) needsCompile = true;
+  }
+  if (!needsCompile) return true;
   console.log("[NATIVE-SPEECH] Compiling speech helper...");
   try {
     execSync(
@@ -78,6 +85,10 @@ function send(cmd) {
 
 function stop() { send("stop"); }
 
+function setLanguage(locale) {
+  send(`lang:${locale}`);
+}
+
 function quit() {
   send("quit");
   setTimeout(() => {
@@ -88,7 +99,7 @@ function quit() {
 function isRunning() { return speechProcess !== null; }
 
 module.exports = {
-  start, stop, quit, isRunning,
+  start, stop, quit, isRunning, setLanguage,
   set onResult(cb) { onResultCb = cb; },
   set onStatus(cb) { onStatusCb = cb; },
   set onError(cb) { onErrorCb = cb; },

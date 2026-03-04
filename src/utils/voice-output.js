@@ -1,14 +1,22 @@
 // ═══════════════════════════════════════════
 // OUMNIA OS — Voice Output (speechSynthesis)
-// TTS wrapper: fr-FR, Chrome bug workaround
+// TTS wrapper: fr-FR, ar-SA, en-US — auto-switch
 // ═══════════════════════════════════════════
+
+// Voice preferences per language
+const VOICE_PREFS = {
+  "fr-FR": { names: ["Thomas"], lang: "fr-FR", fallbackLang: "fr", rate: 1.05, pitch: 0.8 },
+  "ar-SA": { names: ["Majed", "Maged"], lang: "ar-SA", fallbackLang: "ar", rate: 0.95, pitch: 0.9 },
+  "en-US": { names: ["Daniel", "Samantha"], lang: "en-US", fallbackLang: "en", rate: 1.0, pitch: 0.85 },
+};
 
 export function createVoiceOutput() {
   let currentUtterance = null;
   let resumeInterval = null;
   let speaking = false;
   let boundaryCallback = null;
-  let cachedVoice = null;
+  let voiceCache = {}; // locale -> voice
+  let currentLang = "fr-FR";
 
   function waitForVoices() {
     return new Promise((resolve) => {
@@ -33,49 +41,68 @@ export function createVoiceOutput() {
     });
   }
 
-  function findFrenchVoice(voices) {
-    if (cachedVoice) return cachedVoice;
-    cachedVoice =
-      voices.find((v) => v.name === "Thomas") ||
-      voices.find((v) => v.name.includes("Thomas")) ||
-      voices.find((v) => v.lang === "fr-FR" && v.name.toLowerCase().includes("male")) ||
-      voices.find((v) => v.lang === "fr-FR") ||
-      voices.find((v) => v.lang.startsWith("fr")) ||
-      voices[0] || null;
-    return cachedVoice;
+  function findVoiceForLang(voices, lang) {
+    if (voiceCache[lang]) return voiceCache[lang];
+    const pref = VOICE_PREFS[lang] || VOICE_PREFS["fr-FR"];
+    const voice =
+      voices.find((v) => pref.names.some((n) => v.name === n)) ||
+      voices.find((v) => pref.names.some((n) => v.name.includes(n))) ||
+      voices.find((v) => v.lang === pref.lang) ||
+      voices.find((v) => v.lang.startsWith(pref.fallbackLang)) ||
+      null;
+    if (voice) voiceCache[lang] = voice;
+    return voice;
   }
 
-  // Pre-load voices (some browsers load async)
+  // Pre-load voices
   if (window.speechSynthesis) {
-    waitForVoices().then((voices) => findFrenchVoice(voices));
+    waitForVoices().then((voices) => {
+      for (const lang of Object.keys(VOICE_PREFS)) {
+        findVoiceForLang(voices, lang);
+      }
+    });
     window.speechSynthesis.onvoiceschanged = () => {
-      cachedVoice = null;
+      voiceCache = {};
       const voices = window.speechSynthesis.getVoices();
-      findFrenchVoice(voices);
+      for (const lang of Object.keys(VOICE_PREFS)) {
+        findVoiceForLang(voices, lang);
+      }
     };
   }
 
   const controller = {
-    async speak(text) {
+    setLanguage(lang) {
+      if (VOICE_PREFS[lang]) {
+        currentLang = lang;
+      }
+    },
+
+    getLanguage() {
+      return currentLang;
+    },
+
+    async speak(text, lang) {
       if (!window.speechSynthesis || !text?.trim()) {
         return;
       }
 
       controller.stop();
 
+      const useLang = lang || currentLang;
+      const pref = VOICE_PREFS[useLang] || VOICE_PREFS["fr-FR"];
       const voices = await waitForVoices();
 
       const utterance = new SpeechSynthesisUtterance(text);
       currentUtterance = utterance;
 
-      const voice = findFrenchVoice(voices);
+      const voice = findVoiceForLang(voices, useLang);
       if (voice) utterance.voice = voice;
-      utterance.lang = "fr-FR";
-      utterance.rate = 1.05;
-      utterance.pitch = 0.8;
+      utterance.lang = pref.lang;
+      utterance.rate = pref.rate;
+      utterance.pitch = pref.pitch;
 
       return new Promise((resolve) => {
-        // Chrome bug workaround: pause/resume every 14s
+        // Chrome bug workaround
         resumeInterval = setInterval(() => {
           if (window.speechSynthesis.speaking) {
             window.speechSynthesis.pause();
@@ -83,13 +110,9 @@ export function createVoiceOutput() {
           }
         }, 14000);
 
-        // Boundary events for audioLevel estimation
         utterance.onboundary = (event) => {
           if (boundaryCallback) {
-            const level =
-              event.name === "word"
-                ? 0.5 + Math.random() * 0.5
-                : 0.3;
+            const level = event.name === "word" ? 0.5 + Math.random() * 0.5 : 0.3;
             boundaryCallback(level);
           }
         };
@@ -109,7 +132,7 @@ export function createVoiceOutput() {
           resumeInterval = null;
           currentUtterance = null;
           if (boundaryCallback) boundaryCallback(0);
-          resolve(); // Always resolve — don't break the voice loop
+          resolve();
         };
 
         speaking = true;

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build && electron-builder",
+    "build-mac": "vite build && electron-builder --mac",
     "preview": "vite preview",
     "start": "electron ."
   },
@@ -37,14 +38,14 @@
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "com.oumnia.commandcenter",
-    "productName": "Oumnia OS",
+    "appId": "com.oumnia.os",
+    "productName": "OUMNIA OS",
     "directories": {
       "output": "release"
     },
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "public/icon.png",
+      "icon": "build/icon.icns",
       "target": [
         "dmg"
       ]
@@ -53,7 +54,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "public/icon.png"
+      "icon": "build/icon.icns"
     },
     "asarUnpack": [
       "node_modules/node-pty/**"

@@ -6,7 +6,9 @@ const { initDefaultProfile } = require("./profile-manager");
 const { initDefaultProjects } = require("./project-manager");
 const { migrate } = require("./migrate");
 const { close: closeDb } = require("./database");
-const { handleChat, getGreetingContext, buildSystemPrompt, setCurrentProject, setAllProjectScans } = require("./agent-core");
+const { handleChat, getGreetingContext, getSharedContext, setCurrentProject, setAllProjectScans, resolveToolConfirmation, generateSessionSummary } = require("./agent-core");
+const { getAgent } = require("./agents/registry");
+const { generateDailyDigest } = require("./memory-manager");
 const nativeSpeech = require("./native-speech");
 const terminalManager = require("./terminal-manager");
 const os = require("os");
@@ -63,7 +65,9 @@ function setupClaudeAgent() {
     try {
       const Anthropic = require("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey });
-      const systemPrompt = buildSystemPrompt(context, { voiceMode: true });
+      const agent = getAgent("general");
+      const sharedCtx = getSharedContext();
+      const systemPrompt = agent.buildSystemPrompt(sharedCtx, { voiceMode: true });
 
       const response = await client.messages.create({
         model: "claude-sonnet-4-20250514",
@@ -113,13 +117,22 @@ function setupNativeSpeech() {
   ipcMain.handle("native-speech-is-running", () => {
     return nativeSpeech.isRunning();
   });
+  ipcMain.handle("native-speech-set-language", (_, locale) => {
+    nativeSpeech.setLanguage(locale);
+    return true;
+  });
 }
 
 // ═══ STREAMING CHAT ═══
 function setupStreamingChat() {
-  ipcMain.on("chat-stream", (_, { message, context, voiceMode }) => {
+  ipcMain.on("chat-stream", (_, { message, context, voiceMode, agentId }) => {
     if (!mainWindow) return;
-    handleChat(message, context, mainWindow, { voiceMode: !!voiceMode });
+    handleChat(message, context, mainWindow, { voiceMode: !!voiceMode, agentId: agentId || "general" });
+  });
+
+  // Tool confirmation response from frontend
+  ipcMain.on("tool-confirm-response", (_, { requestId, approved }) => {
+    resolveToolConfirmation(requestId, approved);
   });
 }
 
@@ -578,6 +591,11 @@ app.whenReady().then(() => {
   setupTerminal();
   createWindow();
 
+  // Generate daily digest for previous days on startup (non-blocking)
+  generateDailyDigest().catch((err) => {
+    console.error("[DAILY-JOURNAL] Startup digest error:", err.message);
+  });
+
   // Grant microphone + audio permissions
   mainWindow.webContents.session.setPermissionRequestHandler(
     (webContents, permission, callback) => {
@@ -598,9 +616,13 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
+  // Save session summary + daily digest before quitting
+  generateSessionSummary().catch(() => {});
+  generateDailyDigest().catch(() => {});
   terminalManager.killAll();
   nativeSpeech.quit();
-  closeDb();
+  // Small delay to let summary/digest save
+  setTimeout(() => closeDb(), 800);
 });
 
 app.on("window-all-closed", () => {

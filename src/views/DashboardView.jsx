@@ -10,7 +10,7 @@ const openLink = (url) => {
 
 export default function DashboardView({
   projects, aiText, aiTyping, generalState, audioLevel,
-  totalCodeLines, onNavigate, onHologramClick,
+  totalCodeLines, onNavigate, onHologramClick, onSwitchAgent,
 }) {
   const activeProjects = projects.filter((p) => p.status === "in_progress");
   const totalProgress = activeProjects.length > 0
@@ -111,9 +111,9 @@ export default function DashboardView({
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "16px", padding: "10px 0" }}>
           {AGENTS.map((agent, i) => (
-            <div key={i} style={{
+            <div key={i} onClick={() => agent.status === "active" && onSwitchAgent && onSwitchAgent(agent.id)} style={{
               display: "flex", flexDirection: "column", alignItems: "center", gap: "6px",
-              cursor: "pointer", transition: "transform 0.3s",
+              cursor: agent.status === "active" ? "pointer" : "default", transition: "transform 0.3s",
             }}>
               <div style={{
                 width: "52px", height: "52px", borderRadius: "50%",

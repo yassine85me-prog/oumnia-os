@@ -10,8 +10,8 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
     ipcRenderer.invoke("claude-chat", { message, context }),
 
   // ═══ Claude AI Agent (streaming) ═══
-  chatStream: (message, context, voiceMode) =>
-    ipcRenderer.send("chat-stream", { message, context, voiceMode }),
+  chatStream: (message, context, voiceMode, agentId) =>
+    ipcRenderer.send("chat-stream", { message, context, voiceMode, agentId }),
   onStreamChunk: (callback) => {
     ipcRenderer.removeAllListeners("stream-chunk");
     ipcRenderer.on("stream-chunk", (_, chunk) => callback(chunk));
@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
   startNativeSpeech: () => ipcRenderer.invoke("native-speech-start"),
   stopNativeSpeech: () => ipcRenderer.invoke("native-speech-stop"),
   isNativeSpeechRunning: () => ipcRenderer.invoke("native-speech-is-running"),
+  setSpeechLanguage: (locale) => ipcRenderer.invoke("native-speech-set-language", locale),
   onNativeSpeechResult: (cb) => {
     ipcRenderer.removeAllListeners("native-speech-result");
     ipcRenderer.on("native-speech-result", (_, data) => cb(data));
@@ -98,6 +99,15 @@ contextBridge.exposeInMainWorld("oumniaAPI", {
   onTerminalExit: (cb) => {
     ipcRenderer.removeAllListeners("terminal-exit");
     ipcRenderer.on("terminal-exit", (_, p) => cb(p));
+  },
+
+  // ═══ Tool Confirmation ═══
+  onToolConfirmRequest: (callback) => {
+    ipcRenderer.removeAllListeners("tool-confirm-request");
+    ipcRenderer.on("tool-confirm-request", (_, data) => callback(data));
+  },
+  toolConfirmResponse: (requestId, approved) => {
+    ipcRenderer.send("tool-confirm-response", { requestId, approved });
   },
 
   // ═══ Diagnostics ═══

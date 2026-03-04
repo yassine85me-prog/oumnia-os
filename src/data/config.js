@@ -63,11 +63,11 @@ export const DEFAULT_PROJECTS = [
 ];
 
 export const AGENTS = [
-  { name: "Oumnia", role: "Chef d'Orchestre", emoji: "🧠", status: "active", color: "#00e5ff" },
-  { name: "GastroBot", role: "ERP & Stock", emoji: "📊", status: "idle", color: "#00e676" },
-  { name: "VisionOCR", role: "Scan & Extract", emoji: "👁️", status: "idle", color: "#ff6d00" },
-  { name: "ContentGen", role: "Vidéo & Création", emoji: "🎬", status: "building", color: "#c084fc" },
-  { name: "Apollo", role: "Business & Sales", emoji: "💰", status: "idle", color: "#ffd740" },
+  { id: "general", name: "Oumnia", role: "Chef d'Orchestre", emoji: "🧠", status: "active", color: "#00e5ff" },
+  { id: "gastrobot", name: "GastroBot", role: "ERP & Stock", emoji: "📊", status: "active", color: "#00e676" },
+  { id: "visionocr", name: "VisionOCR", role: "Scan & Extract", emoji: "👁️", status: "idle", color: "#ff6d00" },
+  { id: "contentgen", name: "ContentGen", role: "Vidéo & Création", emoji: "🎬", status: "building", color: "#c084fc" },
+  { id: "apollo", name: "Apollo", role: "Business & Sales", emoji: "💰", status: "idle", color: "#ffd740" },
 ];
 
 export const QUICK_ACCESS = {
