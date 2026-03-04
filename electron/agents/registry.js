@@ -5,6 +5,7 @@
 
 const general = require("./general");
 const gastrobot = require("./gastrobot");
+const visionocr = require("./visionocr");
 
 const AGENTS = {
   general: {
@@ -26,6 +27,16 @@ const AGENTS = {
     maxTokens: { text: 8192, voice: 1024 },
     tools: gastrobot.tools,
     buildSystemPrompt: gastrobot.buildSystemPrompt,
+  },
+  visionocr: {
+    id: "visionocr",
+    name: "VisionOCR",
+    displayName: "VISIONOCR",
+    color: "#ff6d00",
+    model: "claude-sonnet-4-20250514",
+    maxTokens: { text: 8192, voice: 1024 },
+    tools: visionocr.tools,
+    buildSystemPrompt: visionocr.buildSystemPrompt,
   },
 };
 

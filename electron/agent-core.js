@@ -326,7 +326,7 @@ function searchFilesRecursive(dir, regex, results, maxResults = 100, depth = 0) 
   } catch {}
 }
 
-function executeToolCall(name, input) {
+async function executeToolCall(name, input) {
   const projectPath = currentProjectData?.path || "";
 
   try {
@@ -440,6 +440,90 @@ function executeToolCall(name, input) {
         }
 
         return { content: filtered.join("\n").substring(0, 30000), lines: filtered.length };
+      }
+
+      case "scan_image": {
+        const imagePath = input.image_path;
+        if (!fs.existsSync(imagePath)) return { error: `Image not found: ${imagePath}` };
+        const ext = path.extname(imagePath).toLowerCase();
+        if (![".jpg", ".jpeg", ".png"].includes(ext)) return { error: `Format non supporte: ${ext}. Utilise JPG ou PNG.` };
+        const imageData = fs.readFileSync(imagePath);
+        const base64 = imageData.toString("base64");
+        const mediaType = ext === ".png" ? "image/png" : "image/jpeg";
+
+        const Anthropic = require("@anthropic-ai/sdk");
+        const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const response = await client.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2048,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+              { type: "text", text: input.prompt || "Extrais tout le texte visible de cette image. Decris aussi ce que tu vois (type de document, etat, langue)." },
+            ],
+          }],
+        });
+        return { success: true, text: response.content[0].text };
+      }
+
+      case "analyze_bon": {
+        const imagePath = input.image_path;
+        if (!fs.existsSync(imagePath)) return { error: `Image not found: ${imagePath}` };
+        const ext = path.extname(imagePath).toLowerCase();
+        if (![".jpg", ".jpeg", ".png"].includes(ext)) return { error: `Format non supporte: ${ext}. Utilise JPG ou PNG.` };
+        const imageData = fs.readFileSync(imagePath);
+        const base64 = imageData.toString("base64");
+        const mediaType = ext === ".png" ? "image/png" : "image/jpeg";
+
+        const Anthropic = require("@anthropic-ai/sdk");
+        const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const response = await client.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4096,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+              { type: "text", text: `Analyse ce bon de livraison d'un fournisseur restaurant au Maroc. Extrais TOUTES les donnees visibles :
+
+1. Nom du fournisseur
+2. Date de livraison (format DD/MM/YYYY)
+3. Numero du bon / reference
+4. Liste des articles : designation, quantite, unite (kg/pcs/L/carton), prix unitaire
+5. Total en MAD
+6. Toute autre info visible (livreur, signature, tampon, notes)
+
+Evalue ta confiance (0.0 a 1.0) pour chaque extraction.
+Signale les elements illisibles ou douteux dans "flags".
+
+Reponds UNIQUEMENT en JSON valide :
+{
+  "supplier_name": "...",
+  "delivery_date": "DD/MM/YYYY",
+  "invoice_number": "...",
+  "items": [{"name": "...", "qty": 0, "unit": "...", "price": 0}],
+  "total": 0,
+  "confidence": 0.0,
+  "flags": [],
+  "raw_text": "tout le texte brut visible"
+}` },
+            ],
+          }],
+        });
+
+        const text = response.content[0].text;
+        try {
+          // Try to parse JSON from the response
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return { success: true, data: parsed };
+          }
+          return { success: true, data: null, raw: text, warning: "JSON parse failed — raw text returned" };
+        } catch {
+          return { success: true, data: null, raw: text, warning: "JSON parse failed — raw text returned" };
+        }
       }
 
       default:
@@ -656,7 +740,7 @@ async function handleChat(message, context, mainWindow, { voiceMode = false, age
           const approved = await new Promise((resolve) => { pendingConfirmations.set(requestId, { resolve }); });
 
           if (approved) {
-            result = executeToolCall(toolBlock.name, toolBlock.input);
+            result = await executeToolCall(toolBlock.name, toolBlock.input);
             const doneNotif = `\n\n> ${formatToolNotification(toolBlock.name, toolBlock.input, "done")}\n`;
             fullText += doneNotif;
             safeSend("stream-chunk", doneNotif);
@@ -666,7 +750,7 @@ async function handleChat(message, context, mainWindow, { voiceMode = false, age
             safeSend("stream-chunk", `\n\n> ❌ Action refusee par l'utilisateur.\n`);
           }
         } else {
-          result = executeToolCall(toolBlock.name, toolBlock.input);
+          result = await executeToolCall(toolBlock.name, toolBlock.input);
           const doneNotif = `\n\n> ${formatToolNotification(toolBlock.name, toolBlock.input, "done")}\n`;
           fullText += doneNotif;
           safeSend("stream-chunk", doneNotif);
@@ -707,6 +791,8 @@ function formatToolNotification(name, input, phase) {
       case "search_files": return `🔎 Recherche de "${input.query}" dans \`${path.basename(input.directory)}\`...`;
       case "delegate_to_claude_code": return `🤖 Delegation a Claude Code — ⏳ En attente de validation...`;
       case "read_gastroflow_script": return `📦 Lecture du script GastroFlow (section: ${input.section})...`;
+      case "scan_image": return `👁️ Scan de \`${path.basename(input.image_path)}\`...`;
+      case "analyze_bon": return `📋 Analyse du bon \`${path.basename(input.image_path)}\`...`;
       default: return `🔧 ${name}...`;
     }
   } else {
@@ -718,6 +804,8 @@ function formatToolNotification(name, input, phase) {
       case "search_files": return `✅ Recherche terminee pour "${input.query}"`;
       case "delegate_to_claude_code": return `✅ Claude Code a termine sa tache`;
       case "read_gastroflow_script": return `✅ Script GastroFlow lu (section: ${input.section})`;
+      case "scan_image": return `✅ Image scannee : \`${path.basename(input.image_path)}\``;
+      case "analyze_bon": return `✅ Bon analyse : \`${path.basename(input.image_path)}\``;
       default: return `✅ ${name} termine`;
     }
   }
