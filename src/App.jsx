@@ -63,6 +63,7 @@ function App() {
   const sentenceQueueRef = useRef([]);
   const voiceModeRef = useRef(false);
   const standbyRef = useRef(false);
+  const ttsActiveRef = useRef(false); // true while TTS is playing (including between queue sentences)
   const projectsRef = useRef(projects);
   const [deepScanResults, setDeepScanResults] = useState([]);
   const [terminalCwd, setTerminalCwd] = useState(null);
@@ -112,11 +113,15 @@ function App() {
 
     const next = sentenceQueueRef.current.shift();
     if (next) {
+      ttsActiveRef.current = true;
       setGeneralState("speaking");
       try {
         await voiceOut.speak(next);
       } catch {}
       processSpeechQueue();
+    } else {
+      // Queue empty — TTS cycle done
+      ttsActiveRef.current = false;
     }
   }, []);
 
@@ -160,7 +165,9 @@ function App() {
     voiceOutputRef.current?.stop();
     sentenceQueueRef.current = [];
     voiceInputRef.current?.stop(); // Stop mic before TTS (avoid feedback)
+    ttsActiveRef.current = true;
     voiceOutputRef.current?.speak("A vos ordres, je me mets en veille.").then(() => {
+      ttsActiveRef.current = false;
       voiceInputRef.current?.start(); // Restart for wake detection
     }).catch(() => {
       voiceInputRef.current?.start();
@@ -172,7 +179,9 @@ function App() {
     setGeneralState("idle");
     setVoiceMode(true);
     voiceInputRef.current?.stop(); // Force reset listening=false
+    ttsActiveRef.current = true;
     voiceOutputRef.current?.speak("Je suis la, Yassine.").then(() => {
+      ttsActiveRef.current = false;
       setGeneralState("listening");
       voiceInputRef.current?.start(); // Clean restart
     }).catch(() => {
@@ -189,7 +198,9 @@ function App() {
 
     const speakGreeting = (text) => {
       setGeneralState("speaking");
+      ttsActiveRef.current = true;
       voiceOutputRef.current?.speak(text).then(() => {
+        ttsActiveRef.current = false;
         setGeneralState("listening");
         voiceInputRef.current?.start();
       }).catch(() => {
@@ -367,6 +378,7 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
         sentenceQueueRef.current = [];
 
         setGeneralState("speaking");
+        ttsActiveRef.current = true;
 
         // Detect response language and switch STT to match for next input
         const responseLang = detectLanguage(finalText);
@@ -381,8 +393,11 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
         // Wait for ALL speech to finish BEFORE starting mic
         const onAllSpeechDone = () => {
           setGeneralState((prev) => prev === "speaking" ? "listening" : prev);
-          // Only start listening AFTER GENERAL is completely done talking
-          setTimeout(() => voiceInputRef.current?.start(), 300);
+          // Longer delay to avoid mic picking up TTS residual audio
+          setTimeout(() => {
+            ttsActiveRef.current = false;
+            voiceInputRef.current?.start();
+          }, 800);
         };
 
         if (remaining.length > 2) {
@@ -479,6 +494,8 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
     // Wire voice input callbacks
     voiceIn.onResult = (transcript, isFinal) => {
       if (standbyRef.current) return;
+      // Anti-feedback: ignore mic input while TTS is active or just finished
+      if (ttsActiveRef.current || voiceOut.isSpeaking()) return;
       setChatInput(transcript);
       if (isFinal && transcript.trim()) {
         handleVoiceTranscript(transcript.trim());
@@ -509,8 +526,10 @@ Texte brut uniquement — pas de listes, pas de puces, pas de caracteres speciau
       const speaking = voiceOut.isSpeaking();
       const listening = voiceIn.isListening();
       const stale = Date.now() - voiceIn.getLastActivity() > 60000;
+      const ttsActive = ttsActiveRef.current || sentenceQueueRef.current.length > 0;
 
-      if (vm && !speaking && (!listening || stale)) {
+      // Never restart mic while TTS is active or queue has pending sentences
+      if (vm && !speaking && !ttsActive && (!listening || stale)) {
         if (stale) voiceIn.stop(); // Force reset if stale
         setGeneralState((prev) => {
           if (prev === "listening" || prev === "idle" || prev === "repos") {
